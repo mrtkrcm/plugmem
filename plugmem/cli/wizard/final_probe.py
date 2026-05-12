@@ -11,24 +11,14 @@ from typing import Tuple
 import requests
 
 from plugmem.cli.config import PlugmemConfig, config_to_env
+from plugmem.cli.daemon import _build_uvicorn_cmd
 
 
 def run_final_probe(cfg: PlugmemConfig, *, timeout: float = 30.0) -> Tuple[bool, str]:
     env = os.environ.copy()
     env.update(config_to_env(cfg))
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "plugmem.api.app:app",
-        "--host",
-        cfg.service.host,
-        "--port",
-        str(cfg.service.port),
-        "--log-level",
-        cfg.service.log_level.lower(),
-    ]
+    cmd = _build_uvicorn_cmd(cfg)
 
     proc = subprocess.Popen(
         cmd, env=env,

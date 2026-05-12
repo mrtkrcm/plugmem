@@ -1,0 +1,15 @@
+.git
+.gitignore
+.DS_Store
+__pycache__
+*.pyc
+.env
+.venv
+assets
+examples
+scripts
+src
+tests
+host_local_inference
+openclaw-plugmem-plugin
+*.md
