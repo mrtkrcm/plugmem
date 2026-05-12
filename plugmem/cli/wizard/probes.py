@@ -29,12 +29,12 @@ def detect_ollama(
         data = resp.json()
         raw_models = data.get("models", [])
         names = [m.get("name") for m in raw_models if isinstance(m, dict)]
-        names = [n for n in names if n]
+        names = [n for n in names if isinstance(n, str)]
     except (ValueError, AttributeError):
         return None
     return OllamaInfo(
         base_url="http://{}:{}/v1".format(host, port),
-        models=sorted(names),
+        models=sorted(names),  # type: ignore[arg-type]
     )
 
 

@@ -142,7 +142,7 @@ class OpenAICompatibleLLMClient(LLMClient):
             with open(self.token_usage_file, "a") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception:
-            pass
+            logger.debug("Failed to log token usage", exc_info=True)
 
 
 def create_llm_client_from_env() -> LLMClient:

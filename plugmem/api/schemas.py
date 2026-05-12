@@ -43,20 +43,20 @@ class GraphListResponse(BaseModel):
 # ------------------------------------------------------------------ #
 
 class TrajectoryStep(BaseModel):
-    observation: str
-    action: str
+    observation: str = Field(..., max_length=100000)
+    action: str = Field(..., max_length=100000)
 
 
 class SemanticMemoryInput(BaseModel):
-    semantic_memory: str
+    semantic_memory: str = Field(..., max_length=10000)
     tags: List[str] = Field(default_factory=list)
     source: Optional[MemorySource] = None
     confidence: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class ProceduralMemoryInput(BaseModel):
-    subgoal: str
-    procedural_memory: str
+    subgoal: str = Field(..., max_length=5000)
+    procedural_memory: str = Field(..., max_length=50000)
     return_value: float = Field(0.0, alias="return")
     source: Optional[MemorySource] = None
     confidence: float = Field(0.5, ge=0.0, le=1.0)
@@ -107,7 +107,7 @@ class MemoryInsertResponse(BaseModel):
 # ------------------------------------------------------------------ #
 
 class RetrieveRequest(BaseModel):
-    observation: str
+    observation: str = Field(..., max_length=100000)
     goal: Optional[str] = None
     subgoal: Optional[str] = None
     state: Optional[str] = None
@@ -143,7 +143,7 @@ class RetrieveResponse(BaseModel):
 
 
 class ReasonRequest(BaseModel):
-    observation: str
+    observation: str = Field(..., max_length=100000)
     goal: Optional[str] = None
     subgoal: Optional[str] = None
     state: Optional[str] = None
@@ -173,7 +173,7 @@ CandidateKind = Literal["failure_delta", "correction"]
 
 class CandidateInput(BaseModel):
     kind: CandidateKind
-    window: str = Field(..., description="Text context for the candidate.")
+    window: str = Field(..., max_length=50000, description="Text context for the candidate.")
 
 
 class ExtractRequest(BaseModel):

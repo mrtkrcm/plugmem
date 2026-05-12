@@ -63,22 +63,11 @@ def _insert_trajectory(graph, body: MemoryInsertRequest) -> MemoryInsertResponse
 def _insert_structured(graph, body: MemoryInsertRequest) -> MemoryInsertResponse:
     embedder = get_embedder()
 
-    # Build a Memory-like object with pre-structured data
-    mem = Memory.__new__(Memory)
-    mem.time = graph.semantic_time
-    mem.session_id = body.session_id
-    mem.llm = get_llm()
-    mem.embedder = embedder
-    mem.memory = {
-        "goal": "",
-        "episodic": [],
-        "semantic": [],
-        "procedural": [],
-    }
-    mem.memory_embedding = {
-        "semantic": [],
-        "procedural": [],
-    }
+    mem = Memory.from_structured(
+        embedder=embedder,
+        time=graph.semantic_time,
+        session_id=body.session_id,
+    )
 
     # Episodic: list of trajectories (list of step dicts)
     if body.episodic:

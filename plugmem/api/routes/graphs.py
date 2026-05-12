@@ -106,7 +106,7 @@ async def browse_nodes(
         elif node_type == "semantic":
             d = {"semantic_id": n.semantic_id, "semantic_memory": n.get_semantic_memory(),
                  "tags": [t.tag for t in n.tag_nodes], "is_active": n.is_active,
-                 "credibility": n.credibility, "time": n.time}
+                 "credibility": getattr(n, "Credibility", 10), "time": n.time}
         elif node_type == "tag":
             d = {"tag_id": n.tag_id, "tag": n.tag, "importance": n.importance, "time": n.time}
         elif node_type == "subgoal":

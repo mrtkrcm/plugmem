@@ -86,11 +86,11 @@ class ChromaStorage:
             try:
                 self._client.delete_collection(_collection_name(graph_id, node_type))
             except Exception:
-                pass
+                logger.debug("delete_graph: no %s collection for %s", node_type, graph_id)
         try:
             self._client.delete_collection(f"{graph_id}_recall_audit")
         except Exception:
-            pass
+            logger.debug("delete_graph: no recall_audit collection for %s", graph_id)
 
     def list_graphs(self) -> List[str]:
         """List all graph IDs by inspecting collection names."""

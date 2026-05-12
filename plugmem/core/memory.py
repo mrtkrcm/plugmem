@@ -101,6 +101,33 @@ class Memory:
         )
         self.observation_t0 = observation_t1
 
+    @classmethod
+    def from_structured(
+        cls,
+        embedder: EmbeddingClient,
+        time: int = 0,
+        session_id: Optional[str] = None,
+    ) -> Memory:
+        """Build a Memory-like object with pre-structured data (no LLM calls).
+
+        Sets ``goal`` to an empty string and ``observation_t0`` to an empty
+        string — they are not used since ``close()`` is never called on
+        structured memories. The caller fills ``.memory`` and
+        ``.memory_embedding`` directly before passing to ``MemoryGraph.insert``.
+        """
+        mem = object.__new__(cls)
+        mem.time = time
+        mem.session_id = session_id
+        mem.llm = None  # type: ignore[assignment]
+        mem.embedder = embedder
+        mem.memory = {"goal": "", "episodic": [], "semantic": [], "procedural": []}
+        mem.memory_embedding = {"semantic": [], "procedural": []}
+        mem.observation_t0 = ""
+        mem.goal = ""
+        mem.trajectory = []
+        mem.state_t0 = ""
+        return mem
+
     def close(self) -> None:
         self.memory["episodic"].append(self.trajectory)
         self.trajectory = []

@@ -30,7 +30,39 @@ plugmem = "plugmem.cli.main:app"
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "mypy>=1.0",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+no_implicit_optional = false
+disable_error_code = [
+    "no-untyped-def", "no-any-return", "var-annotated",
+    "attr-defined", "union-attr", "misc", "index",
+]
+
+[[tool.mypy.overrides]]
+module = "plugmem.clients.*"
+disable_error_code = ["assignment", "arg-type", "return-value"]
+
+[[tool.mypy.overrides]]
+module = "plugmem.storage.*"
+disable_error_code = ["assignment", "arg-type", "return-value"]
+
+[[tool.mypy.overrides]]
+module = "plugmem.api.*"
+disable_error_code = ["assignment", "arg-type", "return-value"]
+
+[[tool.mypy.overrides]]
+module = "plugmem.core.*"
+disable_error_code = ["assignment", "arg-type", "return-value", "list-item"]
+
+[[tool.mypy.overrides]]
+module = "plugmem.inference.*"
+disable_error_code = ["assignment", "arg-type"]
 
 [tool.setuptools.packages.find]
 include = ["plugmem*"]

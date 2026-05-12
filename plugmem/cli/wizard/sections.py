@@ -4,9 +4,9 @@ from __future__ import annotations
 import secrets
 import socket
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from plugmem.cli.config import PlugmemConfig, default_data_dir
+from plugmem.cli.config import PlugmemConfig, default_data_dir, EmbeddingConfig, LLMConfig
 from plugmem.cli.wizard.probes import (
     OllamaInfo,
     detect_ollama,
@@ -183,9 +183,9 @@ def _ask_endpoint_fields(provider: str, detected: Optional[OllamaInfo], current,
     return _manual_endpoint_fields(provider, current, kind=kind)
 
 
-def _manual_endpoint_fields(provider: str, current, *, kind: str) -> tuple[str, str, str]:
-    preset = PROVIDER_PRESETS.get(provider, PROVIDER_PRESETS["other"])
-    default_url = current.base_url or preset["base_url"] or None
+def _manual_endpoint_fields(provider: str, current: LLMConfig | EmbeddingConfig, *, kind: str) -> tuple[str, str, str]:
+    preset: dict = PROVIDER_PRESETS.get(provider, PROVIDER_PRESETS["other"])
+    default_url: str | None = current.base_url or preset.get("base_url") or None
     base_url = prompt_text("base_url", default=default_url)
 
     api_key_default = current.api_key or None
@@ -194,7 +194,7 @@ def _manual_endpoint_fields(provider: str, current, *, kind: str) -> tuple[str, 
     else:
         api_key = prompt_text("api_key (leave blank if not required)", default=api_key_default, password=True, allow_empty=True)
 
-    model_default = current.model or (preset["default_llm_model"] if kind == "llm" else preset["default_embed_model"]) or None
+    model_default: str | None = current.model or (preset.get("default_llm_model") if kind == "llm" else preset.get("default_embed_model")) or None
     model = prompt_text("model", default=model_default)
     return base_url, api_key, model
 

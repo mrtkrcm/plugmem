@@ -150,6 +150,7 @@ class PromptRegistry:
             self._load_service_defaults()
 
     def _load_service_defaults(self) -> None:
+        assert self._prompts_dir is not None
         path = self._prompts_dir / "_defaults.yaml"
         data = _load_yaml(str(path))
         for name, entry in data.items():
