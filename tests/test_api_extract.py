@@ -6,11 +6,13 @@ import json
 import pytest
 
 from plugmem.api import dependencies as deps
+from plugmem.clients.llm import LLMClient
 from plugmem.inference import promotion as promo
 
 
-class CannedLLM:
-    def __init__(self, response: str):
+class CannedLLM(LLMClient):
+    def __init__(self, response: str = ""):
+        super().__init__()
         self.response = response
         self.calls: list = []
 
@@ -19,8 +21,10 @@ class CannedLLM:
         return self.response
 
 
-def _swap_llm(canned: CannedLLM):
-    deps._llm_client = canned
+@pytest.fixture(autouse=True)
+def _no_leakage():
+    yield
+    deps.reset_singletons()
 
 
 def test_extract_no_candidates_returns_empty(client):
@@ -29,8 +33,13 @@ def test_extract_no_candidates_returns_empty(client):
     assert resp.json() == {"memories": []}
 
 
+def _set_llm(canned: CannedLLM):
+    """Set the LLM singleton for one test."""
+    deps._llm_client = canned
+
+
 def test_extract_returns_parsed_memories(client):
-    canned = CannedLLM(json.dumps([
+    _set_llm(CannedLLM(json.dumps([
         {
             "type": "semantic",
             "semantic_memory": "Use httpx, not requests",
@@ -45,8 +54,7 @@ def test_extract_returns_parsed_memories(client):
             "source": "failure_delta",
             "confidence": 0.7,
         },
-    ]))
-    _swap_llm(canned)
+    ])))
     resp = client.post("/api/v1/extract", json={
         "candidates": [
             {"kind": "correction", "window": "user said: actually use httpx"},
@@ -62,7 +70,7 @@ def test_extract_returns_parsed_memories(client):
 
 
 def test_extract_drops_invalid_memories(client):
-    canned = CannedLLM(json.dumps([
+    _set_llm(CannedLLM(json.dumps([
         {
             "type": "semantic",
             "semantic_memory": "x",
@@ -80,8 +88,7 @@ def test_extract_drops_invalid_memories(client):
             "source": "correction",
             "confidence": 0.6,
         },
-    ]))
-    _swap_llm(canned)
+    ])))
     resp = client.post("/api/v1/extract", json={
         "candidates": [{"kind": "correction", "window": "..."}],
     })
@@ -92,8 +99,7 @@ def test_extract_drops_invalid_memories(client):
 
 
 def test_extract_handles_unparseable_llm_output(client):
-    canned = CannedLLM("this is not JSON at all")
-    _swap_llm(canned)
+    _set_llm(CannedLLM("this is not JSON at all"))
     resp = client.post("/api/v1/extract", json={
         "candidates": [{"kind": "correction", "window": "..."}],
     })
@@ -102,7 +108,7 @@ def test_extract_handles_unparseable_llm_output(client):
 
 
 def test_extract_strips_code_fences(client):
-    canned = CannedLLM(
+    _set_llm(CannedLLM(
         "```json\n"
         + json.dumps([{
             "type": "semantic",
@@ -111,8 +117,7 @@ def test_extract_strips_code_fences(client):
             "confidence": 0.7,
         }])
         + "\n```"
-    )
-    _swap_llm(canned)
+    ))
     resp = client.post("/api/v1/extract", json={
         "candidates": [{"kind": "correction", "window": "..."}],
     })

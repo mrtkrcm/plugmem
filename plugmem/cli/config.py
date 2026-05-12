@@ -128,6 +128,10 @@ _CONFIG_TO_ENV: Dict[str, str] = {
     "embedding.max_text_len": "EMBEDDING_MAX_TEXT_LEN",
 }
 
+# Build default values from the model constructors so we can skip them.
+_DEFAULT_PLUGMEM = PlugmemConfig()
+_DEFAULT_PAYLOAD = _DEFAULT_PLUGMEM.with_defaults_applied().model_dump()
+
 
 def config_to_env(cfg: PlugmemConfig) -> Dict[str, str]:
     cfg = cfg.with_defaults_applied()
@@ -136,7 +140,8 @@ def config_to_env(cfg: PlugmemConfig) -> Dict[str, str]:
     for dotted, env_name in _CONFIG_TO_ENV.items():
         section, field = dotted.split(".")
         v = payload[section][field]
-        if v in (None, "", 0, 0.0):
+        default_v = _DEFAULT_PAYLOAD[section][field]
+        if v == default_v or v in (None, "", 0, 0.0):
             continue
         out[env_name] = str(v)
     return out

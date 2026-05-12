@@ -30,7 +30,11 @@ def run_final_probe(cfg: PlugmemConfig, *, timeout: float = 30.0) -> Tuple[bool,
         cfg.service.log_level.lower(),
     ]
 
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        cmd, env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
 
     try:
         ok, msg = _poll_health(cfg, timeout=timeout, proc=proc)

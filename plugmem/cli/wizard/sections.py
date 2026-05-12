@@ -54,42 +54,56 @@ PROVIDER_PRESETS = {
 PROVIDER_CHOICES = ["ollama", "openai", "azure", "vllm", "other"]
 
 
-def run_llm_section(cfg: PlugmemConfig, *, ollama: Optional[OllamaInfo] = None) -> bool:
-    header("LLM endpoint")
-    detected = ollama if ollama is not None else detect_ollama()
-
+def _probe_loop(
+    cfg_target,  # cfg.llm or cfg.embedding
+    provider: str,
+    detected: Optional[OllamaInfo],
+    ask_fields,
+    probe_func,
+    *,
+    kind_label: str,
+) -> bool:
     while True:
-        provider = _ask_provider(detected, kind="LLM")
-        base_url, api_key, model = _ask_llm_fields(provider, detected, cfg.llm)
+        base_url, api_key, model = ask_fields(provider, detected, cfg_target)
 
-        info("Validating LLM endpoint\u2026")
-        ok, msg = probe_llm(base_url, api_key, model)
+        info("Validating {} endpoint\u2026".format(kind_label))
+        ok, msg = probe_func(base_url, api_key, model)
         if ok:
-            success("LLM probe succeeded ({} @ {}).".format(model, base_url))
-            cfg.llm.base_url = base_url
-            cfg.llm.api_key = api_key
-            cfg.llm.model = model
+            success("{} probe succeeded ({} @ {}).".format(kind_label.title(), model, base_url))
+            cfg_target.base_url = base_url
+            cfg_target.api_key = api_key
+            cfg_target.model = model
             return True
 
         error("Validation failed: {}".format(msg))
         action = prompt_action()
         if action == "skip":
-            warn("Skipping LLM configuration. You can re-run `plugmem init` later.")
+            warn("Skipping {} configuration.".format(kind_label))
             return False
         if action == "edit":
-            cfg.llm.base_url = base_url
-            cfg.llm.api_key = api_key
-            cfg.llm.model = model
+            cfg_target.base_url = base_url
+            cfg_target.api_key = api_key
+            cfg_target.model = model
             continue
         info("Retrying with the same values\u2026")
-        ok, msg = probe_llm(base_url, api_key, model)
+        ok, msg = probe_func(base_url, api_key, model)
         if ok:
-            success("LLM probe succeeded on retry.")
-            cfg.llm.base_url = base_url
-            cfg.llm.api_key = api_key
-            cfg.llm.model = model
+            success("{} probe succeeded on retry.".format(kind_label.title()))
+            cfg_target.base_url = base_url
+            cfg_target.api_key = api_key
+            cfg_target.model = model
             return True
         error("Still failing: {}".format(msg))
+
+
+def run_llm_section(cfg: PlugmemConfig, *, ollama: Optional[OllamaInfo] = None) -> bool:
+    header("LLM endpoint")
+    detected = ollama if ollama is not None else detect_ollama()
+    provider = _ask_provider(detected, kind="LLM")
+    return _probe_loop(
+        cfg.llm, provider, detected, _ask_llm_fields, probe_llm,
+        kind_label="llm",
+    )
 
 
 def run_embedding_section(
@@ -97,39 +111,11 @@ def run_embedding_section(
 ) -> bool:
     header("Embedding endpoint")
     detected = ollama if ollama is not None else detect_ollama()
-
-    while True:
-        provider = _ask_provider(detected, kind="embedding")
-        base_url, api_key, model = _ask_embedding_fields(provider, detected, cfg.embedding)
-
-        info("Validating embedding endpoint\u2026")
-        ok, msg = probe_embedding(base_url, api_key, model)
-        if ok:
-            success("Embedding probe succeeded ({} @ {}).".format(model, base_url))
-            cfg.embedding.base_url = base_url
-            cfg.embedding.api_key = api_key
-            cfg.embedding.model = model
-            return True
-
-        error("Validation failed: {}".format(msg))
-        action = prompt_action()
-        if action == "skip":
-            warn("Skipping embedding configuration.")
-            return False
-        if action == "edit":
-            cfg.embedding.base_url = base_url
-            cfg.embedding.api_key = api_key
-            cfg.embedding.model = model
-            continue
-        info("Retrying with the same values\u2026")
-        ok, msg = probe_embedding(base_url, api_key, model)
-        if ok:
-            success("Embedding probe succeeded on retry.")
-            cfg.embedding.base_url = base_url
-            cfg.embedding.api_key = api_key
-            cfg.embedding.model = model
-            return True
-        error("Still failing: {}".format(msg))
+    provider = _ask_provider(detected, kind="embedding")
+    return _probe_loop(
+        cfg.embedding, provider, detected, _ask_embedding_fields, probe_embedding,
+        kind_label="embedding",
+    )
 
 
 def run_service_section(cfg: PlugmemConfig) -> bool:
