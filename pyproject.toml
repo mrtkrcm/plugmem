@@ -16,7 +16,15 @@ dependencies = [
     "requests>=2.28",
     "pyyaml>=6.0",
     "pydantic>=2.0",
+    # CLI / setup wizard
+    "typer>=0.12",
+    "rich>=13.7",
+    "tomli>=2.0; python_version<'3.11'",
+    "tomli-w>=1.0",
 ]
+
+[project.scripts]
+plugmem = "plugmem.cli.main:app"
 
 [project.optional-dependencies]
 dev = [
