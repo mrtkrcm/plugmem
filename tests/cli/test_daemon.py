@@ -3,8 +3,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from plugmem.cli.config import PlugmemConfig
-from plugmem.cli.daemon import _build_uvicorn_cmd, _clear_pid_file, _read_pid, _is_running, daemon_status
+import pytest
+
+from plugmem.cli.config import PlugmemConfig, default_pid_file
+from plugmem.cli.daemon import (
+    DaemonError,
+    _build_uvicorn_cmd,
+    _clear_pid_file,
+    _is_running,
+    _read_pid,
+    daemon_status,
+    start_daemon,
+    stop_daemon,
+)
 
 
 def test_build_uvicorn_cmd():
@@ -19,33 +30,37 @@ def test_build_uvicorn_cmd():
 
 
 def test_pid_file_round_trip(tmp_path, monkeypatch):
-    from plugmem.cli.config import default_pid_file
-
     monkeypatch.setattr("plugmem.cli.config.default_pid_file", lambda: tmp_path / "plugmem.pid")
     monkeypatch.setattr("plugmem.cli.daemon.default_pid_file", lambda: tmp_path / "plugmem.pid")
 
     assert _read_pid() is None
-
-    pid_file: Path = tmp_path / "plugmem.pid"
+    pid_file = tmp_path / "plugmem.pid"
     pid_file.write_text("12345")
     assert _read_pid() == 12345
-
     _clear_pid_file()
     assert not pid_file.exists()
 
 
-def test_is_running():
+def test_is_running_with_invalid_pids():
     assert not _is_running(-1)
     assert not _is_running(0)
     assert not _is_running(999999999)
 
 
 def test_daemon_status_stopped(monkeypatch):
+    monkeypatch.setattr("plugmem.cli.daemon._read_pid", lambda: None)
     cfg = PlugmemConfig()
-
-    def fake_read_pid():
-        return None
-
-    monkeypatch.setattr("plugmem.cli.daemon._read_pid", fake_read_pid)
     status = daemon_status(cfg)
     assert status["running"] is False
+
+
+def test_start_daemon_raises_if_already_running(monkeypatch):
+    monkeypatch.setattr("plugmem.cli.daemon._read_pid", lambda: 12345)
+    monkeypatch.setattr("plugmem.cli.daemon._is_running", lambda pid: True)
+    with pytest.raises(DaemonError, match="already running"):
+        start_daemon(PlugmemConfig())
+
+
+def test_stop_daemon_returns_false_when_not_running(monkeypatch):
+    monkeypatch.setattr("plugmem.cli.daemon._read_pid", lambda: None)
+    assert stop_daemon() is False
