@@ -21,6 +21,9 @@ For more details, please see the full paper: [https://arxiv.org/abs/2603.03296](
   - [Memory](#memory)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+  - [Using the CLI (recommended)](#using-the-cli-recommended)
+  - [Using environment variables](#using-environment-variables)
+- [CLI Reference](#cli-reference)
 - [Reproducibility](#reproducibility)
 - [Citation](#citation)
 
@@ -82,6 +85,16 @@ mg.retrieve_and_reason(...)
 </p>
 
 ## Installation
+
+### Service
+
+```bash
+uv sync
+uv pip install -e ".[dev]"   # includes pytest, mypy
+```
+
+### Benchmarks (WebArena / LongMemEval / HotpotQA)
+
 1. Install benchmarks in `src/` and follow their installation docs to set up the environment.
 2. Install/upgrade `openai==2.6.1`.
 3. Additional modifications:
@@ -100,7 +113,42 @@ cp src/webarena_patch/openai_utils.py src/webarena/llms/providers/openai_utils.p
 ```
 
 ## Quick Start
-1. Export Parameters
+
+### Using the CLI (recommended)
+
+```bash
+# 1. Install
+uv sync
+uv pip install -e ".[dev]"
+
+# 2. Interactive setup (detects Ollama, probes endpoints, writes config)
+plugmem init
+
+# 3. Start the service
+plugmem start
+# → Daemon started (PID 12345) on http://127.0.0.1:8080
+
+# 4. Check health
+plugmem health
+
+# 5. Create a memory graph
+curl -X POST http://localhost:8080/api/v1/graphs \
+  -H "Content-Type: application/json" \
+  -d '{"graph_id":"my-agent"}'
+
+# 6. Insert a memory
+curl -X POST http://localhost:8080/api/v1/graphs/my-agent/memories \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"structured","semantic":[{"semantic_memory":"User prefers async standups","tags":["preference"]}]}'
+
+# 7. Retrieve
+curl -X POST http://localhost:8080/api/v1/graphs/my-agent/reason \
+  -H "Content-Type: application/json" \
+  -d '{"observation":"How does the user prefer to communicate?"}'
+```
+
+### Using environment variables
+
 ```bash
 export OPENAI_API_KEY=<your_openai_api_key>
 export AZURE_ENDPOINT=<your_azure_endpoint>
@@ -151,6 +199,34 @@ mkdir -p "$DIR_PATH/episodic_memory" \
    #Rebuild the memory graph from structuring result and run test
    python eval_hotpotqa_all.py
    ```
+
+## CLI Reference
+
+```text
+Usage: plugmem [OPTIONS] COMMAND [ARGS]...
+
+Commands:
+  init      Interactive setup wizard for LLM, embedding, and service settings.
+  start     Start the PlugMem service (daemonized by default).
+  stop      Stop the running PlugMem daemon.
+  restart   Restart the PlugMem daemon.
+  status    Show daemon status, PID, port, and last health probe.
+  logs      Print or tail the daemon log.
+  health    One-shot health check against the running service.
+```
+
+The CLI uses XDG paths for config (`~/.config/plugmem/config.toml`), state
+(PID file at `~/.local/state/plugmem/plugmem.pid`), and data
+(`~/.local/share/plugmem/chroma/`). All config keys can be overridden at
+runtime via environment variables — `LLM_API_KEY=sk-... plugmem start`.
+
+### Development
+
+```bash
+uv run pytest tests/     # 86 tests, ~13s
+uv run mypy plugmem/     # must pass clean
+uv run plugmem --help    # CLI entry point
+```
 
 ## Reproducibility
 - We release agent trajectories and memory graph artifacts for all three tasks.
