@@ -22,6 +22,9 @@ class DaemonError(Exception):
     pass
 
 
+HEALTH_PATH = "/api/v1/health"
+
+
 def _read_pid() -> Optional[int]:
     pid_file = default_pid_file()
     if not pid_file.exists():
@@ -73,7 +76,7 @@ def daemon_status(cfg: PlugmemConfig) -> Dict[str, Any]:
 
 
 def _quick_health(cfg: PlugmemConfig) -> Optional[Dict[str, Any]]:
-    url = f"http://{cfg.service.host}:{cfg.service.port}/health"
+    url = f"http://{cfg.service.host}:{cfg.service.port}{HEALTH_PATH}"
     try:
         resp = requests.get(url, timeout=2.0)
         if resp.status_code == 200:
@@ -128,7 +131,7 @@ def start_daemon(
     if wait_for_health:
         if not _wait_for_health(cfg, timeout=health_timeout, expect_pid=proc.pid):
             raise DaemonError(
-                f"Daemon spawned (PID {proc.pid}) but /health did not respond "
+                f"Daemon spawned (PID {proc.pid}) but {HEALTH_PATH} did not respond "
                 f"within {health_timeout:.0f}s. Check {log_file}."
             )
 
@@ -151,7 +154,7 @@ def _build_uvicorn_cmd(cfg: PlugmemConfig) -> list[str]:
 
 
 def _wait_for_health(cfg: PlugmemConfig, *, timeout: float, expect_pid: int) -> bool:
-    url = f"http://{cfg.service.host}:{cfg.service.port}/health"
+    url = f"http://{cfg.service.host}:{cfg.service.port}{HEALTH_PATH}"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _is_running(expect_pid):

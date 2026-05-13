@@ -1,7 +1,10 @@
 """Memory Inspector endpoints — read/search/inspect/deactivate."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -73,9 +76,9 @@ def _serialize_semantic(n) -> Dict[str, Any]:
         "text": n.get_semantic_memory(),
         "tags": [t.tag for t in n.tag_nodes] or list(n.tags),
         "is_active": n.is_active,
-        "credibility": getattr(n, "Credibility", 10),
-        "session_id": getattr(n, "session_id", None),
-        "date": getattr(n, "date", ""),
+            "credibility": n.credibility,
+        "session_id": n.session_id,
+        "date": n.date,
         "time": n.time,
         "n_tags": len(n.tag_nodes),
         "n_episodics": len(n.episodic_nodes),
@@ -101,7 +104,7 @@ def _serialize_subgoal(n) -> Dict[str, Any]:
         "subgoal": n.subgoal,
         "time": n.time,
         "n_procedurals": len(n.procedural_nodes),
-        "activated": n.activate,
+        "activated": n.is_active,
     }
 
 
@@ -111,9 +114,9 @@ def _serialize_procedural(n) -> Dict[str, Any]:
         "procedural_id": n.procedural_id,
         "text": n.get_procedural_memory(),
         "subgoals": [s.subgoal for s in n.subgoal_nodes] or list(n.subgoals),
-        "return": n.Return,
+        "return": n.return_value,
         "time": n.time,
-        "session_id": getattr(n, "session_id", None),
+        "session_id": n.session_id,
         "n_episodics": len(n.episodic_nodes),
     }
 
@@ -299,8 +302,8 @@ async def recall_trace(graph_id: str, body: RecallTraceRequest) -> RecallTraceRe
             selected_procedural_ids=(result.get("selected") or {}).get("procedural_ids", []) or [],
             n_messages=len(result.get("rendered_prompt") or []),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("recall_trace audit log failed: %s", exc)
 
     return RecallTraceResponse(**result)
 
@@ -340,7 +343,7 @@ def _topology_node(node_type: str, node) -> Dict[str, Any]:
                 "node_id": node.semantic_id,
                 "label": _short(node.get_semantic_memory()),
                 "is_active": node.is_active,
-                "credibility": getattr(node, "Credibility", 10),
+                "credibility": getattr(node, "credibility", 10),
                 "time": node.time,
             },
             "classes": "semantic" if node.is_active else "semantic inactive",
@@ -364,7 +367,7 @@ def _topology_node(node_type: str, node) -> Dict[str, Any]:
                 "type": "subgoal",
                 "node_id": node.subgoal_id,
                 "label": _short(node.subgoal, 40),
-                "activated": node.activate,
+                "activated": node.is_active,
                 "time": node.time,
             },
             "classes": "subgoal",
@@ -376,7 +379,7 @@ def _topology_node(node_type: str, node) -> Dict[str, Any]:
                 "type": "procedural",
                 "node_id": node.procedural_id,
                 "label": _short(node.get_procedural_memory()),
-                "return": node.Return,
+                "return": node.return_value,
                 "time": node.time,
             },
             "classes": "procedural",
@@ -599,9 +602,10 @@ async def list_recalls(
 
 @router.get("/{graph_id}/sessions", response_model=SessionListResponse)
 async def list_sessions(graph_id: str) -> SessionListResponse:
-    _get_graph(graph_id)  # 404 if missing
-    sessions = _manager().storage.list_sessions(graph_id)
-    return SessionListResponse(graph_id=graph_id, sessions=sessions)
+    graph = _get_graph(graph_id)  # 404 if missing
+    sessions = set(graph.list_session_ids())
+    sessions.update(_manager().storage.list_recall_sessions(graph_id))
+    return SessionListResponse(graph_id=graph_id, sessions=sorted(sessions))
 
 
 def _coerce_int_time(t: Any) -> int:
@@ -628,10 +632,9 @@ async def get_session_timeline(
     """
     graph = _get_graph(graph_id)
     events: List[Dict[str, Any]] = []
+    session_nodes = graph.get_session_nodes(session_id)
 
-    for n in graph.episodic_nodes:
-        if getattr(n, "session_id", None) != session_id:
-            continue
+    for n in session_nodes["episodic"]:
         text = "\n".join(s for s in (n.observation, n.action) if s)
         events.append({
             "kind": "insert",
@@ -643,9 +646,7 @@ async def get_session_timeline(
             "subgoal": n.subgoal or None,
         })
 
-    for n in graph.semantic_nodes:
-        if getattr(n, "session_id", None) != session_id:
-            continue
+    for n in session_nodes["semantic"]:
         events.append({
             "kind": "insert",
             "node_type": "semantic",
@@ -654,12 +655,10 @@ async def get_session_timeline(
             "label": _short_event_text(n.get_semantic_memory()),
             "text": n.get_semantic_memory(),
             "is_active": n.is_active,
-            "credibility": getattr(n, "Credibility", 10),
+            "credibility": n.credibility,
         })
 
-    for n in graph.procedural_nodes:
-        if getattr(n, "session_id", None) != session_id:
-            continue
+    for n in session_nodes["procedural"]:
         events.append({
             "kind": "insert",
             "node_type": "procedural",
@@ -667,7 +666,7 @@ async def get_session_timeline(
             "time": _coerce_int_time(n.time),
             "label": _short_event_text(n.get_procedural_memory()),
             "text": n.get_procedural_memory(),
-            "return_value": n.Return,
+            "return_value": n.return_value,
         })
 
     for r in graph.storage.list_recalls(graph_id, session_id=session_id, limit=10_000):

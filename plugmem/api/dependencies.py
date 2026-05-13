@@ -143,27 +143,30 @@ def get_embedder(config: PlugMemConfig | None = None) -> EmbeddingClient:
     return _embedding_client
 
 
+def build_chroma_storage(cfg: PlugMemConfig) -> ChromaStorage:
+    """Construct a ChromaStorage from config — the single place that builds Chroma clients."""
+    if cfg.chroma_mode == "http":
+        chroma_client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
+    elif cfg.chroma_mode == "ephemeral":
+        chroma_client = chromadb.EphemeralClient()
+    else:
+        chroma_client = chromadb.PersistentClient(path=cfg.chroma_path)
+
+    embedder = get_embedder(cfg)
+    embed_fn = PlugMemEmbeddingFunction(embedder)
+    return ChromaStorage(
+        client=chroma_client,
+        embedding_function=embed_fn,
+        embedding_client=embedder,
+    )
+
+
 def get_graph_manager(config: PlugMemConfig | None = None) -> GraphManager:
     global _graph_manager
     if _graph_manager is None:
         cfg = config or get_config()
-
-        # ChromaDB client
-        if cfg.chroma_mode == "http":
-            chroma_client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
-        elif cfg.chroma_mode == "ephemeral":
-            chroma_client = chromadb.EphemeralClient()
-        else:
-            chroma_client = chromadb.PersistentClient(path=cfg.chroma_path)
-
+        storage = build_chroma_storage(cfg)
         embedder = get_embedder(cfg)
-        embed_fn = PlugMemEmbeddingFunction(embedder)
-
-        storage = ChromaStorage(
-            client=chroma_client,
-            embedding_function=embed_fn,
-            embedding_client=embedder,
-        )
         llm = get_llm(cfg)
 
         _graph_manager = GraphManager(

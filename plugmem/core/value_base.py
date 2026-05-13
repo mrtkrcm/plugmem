@@ -22,12 +22,13 @@ class ValueBase(ABC):
         Return: float = 0,
         Credibility: float = 0,
     ) -> float:
-        v_importance = self.compute_importance(Importance)
-        v_relevance = self.compute_relevance(Relevance)
-        v_recency = self.compute_recency(Recency)
-        v_return = self.compute_return(Return)
-        v_credibility = self.compute_credibility(Credibility)
-        return float(v_importance + v_relevance + v_recency + v_return)
+        return float(
+            self.compute_importance(Importance)
+            + self.compute_relevance(Relevance)
+            + self.compute_recency(Recency)
+            + self.compute_return(Return)
+            + self.compute_credibility(Credibility)
+        )
 
     @abstractmethod
     def compute_importance(self, Importance: float) -> float:

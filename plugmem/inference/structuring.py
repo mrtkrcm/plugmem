@@ -5,6 +5,10 @@ import re
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from plugmem.clients.llm import LLMClient
+
+if TYPE_CHECKING:
+    from plugmem.prompts.registry import PromptRegistry
+from plugmem.inference._shared import render_messages, resolve
 from plugmem.prompts.structuring import (
     GetProceduralPrompt,
     GetReturnPrompt,
@@ -14,28 +18,14 @@ from plugmem.prompts.structuring import (
     GetSubgoalPrompt,
 )
 
-if TYPE_CHECKING:
-    from plugmem.prompts.registry import PromptRegistry
-
-
-def _render_messages(prompt_obj, variables: dict) -> List[Dict[str, str]]:
-    messages = prompt_obj.render(variables)
-    return [{"role": m.role, "content": m.content} for m in messages]
-
-
-def _resolve(name: str, fallback_cls: type, prompts: Optional[PromptRegistry], graph_id: Optional[str]):
-    if prompts is not None:
-        return prompts.get(name, graph_id=graph_id)
-    return fallback_cls()
-
 
 def get_subgoal(
     llm: LLMClient, goal: str, state_t0: str, observation_t0: str, action_t0: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> str:
-    prompt_obj = _resolve("get_subgoal", GetSubgoalPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_subgoal", GetSubgoalPrompt, prompts, graph_id)
     variables = {"goal": goal, "state": state_t0, "observation": observation_t0, "action": action_t0}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     pattern = r"### Subgoal\n(.*)"
     match = re.search(pattern, response, re.S)
     return match.group(1).strip() if match else "<a subgoal>"
@@ -45,9 +35,9 @@ def get_reward(
     llm: LLMClient, goal: str, state_t0: str, action_t0: str, observation_t1: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> str:
-    prompt_obj = _resolve("get_reward", GetRewardPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_reward", GetRewardPrompt, prompts, graph_id)
     variables = {"goal": goal, "state": state_t0, "action": action_t0, "observation": observation_t1}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     pattern = r"### Reward\n(.*)"
     match = re.search(pattern, response, re.S)
     return match.group(1).strip() if match else "<a reward>"
@@ -57,9 +47,9 @@ def get_state(
     llm: LLMClient, goal: str, state_t0: str, action_t0: str, observation_t1: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> str:
-    prompt_obj = _resolve("get_state", GetStatePrompt, prompts, graph_id)
+    prompt_obj = resolve("get_state", GetStatePrompt, prompts, graph_id)
     variables = {"goal": goal, "state": state_t0, "action": action_t0, "observation": observation_t1}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     pattern = r"### State\n(.*)"
     match = re.search(pattern, response, re.S)
     return match.group(1).strip() if match else "<a state>"
@@ -69,9 +59,9 @@ def get_semantic(
     llm: LLMClient, step: dict, trajectory_num: int = 0, turn_num: int = 0, time: int = 0,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> List[dict]:
-    prompt_obj = _resolve("get_semantic", GetSemanticPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_semantic", GetSemanticPrompt, prompts, graph_id)
     variables = {"observation": step["observation"]}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     pattern = r"### Facts\n(.*)"
     match = re.search(pattern, response, re.S)
     facts = match.group(1).strip() if match else None
@@ -97,9 +87,9 @@ def get_return(
     llm: LLMClient, subgoal: str, procedural_memory: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> float:
-    prompt_obj = _resolve("get_return", GetReturnPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_return", GetReturnPrompt, prompts, graph_id)
     variables = {"subgoal": subgoal, "procedural_memory": procedural_memory}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     pattern = r"### Score\n(.*)"
     match = re.search(pattern, response, re.S)
     try:
@@ -112,9 +102,9 @@ def get_procedural(
     llm: LLMClient, trajectory: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> tuple:
-    prompt_obj = _resolve("get_procedural", GetProceduralPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_procedural", GetProceduralPrompt, prompts, graph_id)
     variables = {"trajectory": trajectory}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     pattern = r"### Goal\n(.*)\n### Experiential Insight"
     goal_match = re.search(pattern, response, re.S)
     goal = goal_match.group(1).strip() if goal_match else "<a goal>"

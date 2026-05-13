@@ -476,7 +476,7 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
     import os
 
-    import chromadb
+    from plugmem.api.dependencies import build_chroma_storage, get_config
 
     p = argparse.ArgumentParser(description="Seed the PlugMem demo graph.")
     p.add_argument("--graph-id", default=DEMO_GRAPH_ID)
@@ -485,7 +485,8 @@ if __name__ == "__main__":  # pragma: no cover
     p.add_argument("--chroma-path", default=os.getenv("CHROMA_PATH", "./data/chroma"))
     args = p.parse_args()
 
-    client = chromadb.PersistentClient(path=args.chroma_path)
-    storage = ChromaStorage(client=client)
+    os.environ["CHROMA_PATH"] = args.chroma_path
+    get_config.cache_clear()
+    storage = build_chroma_storage(get_config())
     stats = seed_demo_graph(storage, graph_id=args.graph_id, reset=args.reset)
     print(f"seeded graph_id={args.graph_id!r} at {args.chroma_path}: {stats}")

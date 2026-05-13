@@ -22,8 +22,10 @@ For more details, please see the full paper: [https://arxiv.org/abs/2603.03296](
 - [Installation](#installation)
 - [Quick Start](#quick-start)
   - [Using the CLI (recommended)](#using-the-cli-recommended)
+  - [Remote Deployment](#remote-deployment)
   - [Using environment variables](#using-environment-variables)
 - [CLI Reference](#cli-reference)
+- [Deployment Files](#deployment-files)
 - [Reproducibility](#reproducibility)
 - [Citation](#citation)
 
@@ -93,6 +95,9 @@ uv sync
 uv pip install -e ".[dev]"   # includes pytest, mypy
 ```
 
+For a containerized server deployment, see
+[docs/remote-deployment.md](docs/remote-deployment.md).
+
 ### Benchmarks (WebArena / LongMemEval / HotpotQA)
 
 1. Install benchmarks in `src/` and follow their installation docs to set up the environment.
@@ -128,7 +133,7 @@ plugmem init
 plugmem start
 # → Daemon started (PID 12345) on http://127.0.0.1:8080
 
-# 4. Check health
+# 4. Check health (or `plugmem status`, `plugmem logs`, `plugmem restart`, `plugmem stop`)
 plugmem health
 
 # 5. Create a memory graph
@@ -141,22 +146,83 @@ curl -X POST http://localhost:8080/api/v1/graphs/my-agent/memories \
   -H "Content-Type: application/json" \
   -d '{"mode":"structured","semantic":[{"semantic_memory":"User prefers async standups","tags":["preference"]}]}'
 
-# 7. Retrieve
+# 7. Insert many memories efficiently
+curl -X POST http://localhost:8080/api/v1/graphs/my-agent/memories/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+        "items": [
+          {
+            "mode": "structured",
+            "session_id": "run-A",
+            "semantic": [{"semantic_memory": "User prefers async standups", "tags": ["preference"]}]
+          },
+          {
+            "mode": "structured",
+            "session_id": "run-B",
+            "procedural": [{"subgoal": "communicate clearly", "procedural_memory": "Send concise async updates"}]
+          }
+        ]
+      }'
+
+# 8. Retrieve
 curl -X POST http://localhost:8080/api/v1/graphs/my-agent/reason \
   -H "Content-Type: application/json" \
   -d '{"observation":"How does the user prefer to communicate?"}'
 ```
 
+Use `/memories/batch` when you are ingesting many structured items at once.
+It is structured-mode only and is much more efficient than issuing one HTTP
+request per memory item.
+
+### Remote Deployment
+
+The supported remote path is a single-VM Docker Compose stack:
+
+- [deploy/remote/compose.yaml](deploy/remote/compose.yaml)
+- [deploy/remote/.env.example](deploy/remote/.env.example)
+- [docs/remote-deployment.md](docs/remote-deployment.md)
+
+Quick path:
+
+```bash
+git clone https://github.com/mrtkrcm/PlugMem.git /opt/plugmem
+cd /opt/plugmem
+cp deploy/remote/.env.example deploy/remote/.env
+$EDITOR deploy/remote/.env
+cd deploy/remote
+docker compose --env-file .env up -d --build
+curl http://127.0.0.1:${PLUGMEM_PORT:-8080}/api/v1/health
+```
+
+Production guidance:
+
+- Set `PLUGMEM_API_KEY` and send it as `X-API-Key`
+- Put the API behind a reverse proxy or cloud firewall
+- Persist Chroma data using the `chroma_data` volume
+- Keep the health endpoint path as `/api/v1/health`
+- Prefer `/api/v1/graphs/{graph_id}/memories/batch` for high-volume structured ingestion
+
 ### Using environment variables
 
 ```bash
-export OPENAI_API_KEY=<your_openai_api_key>
-export AZURE_ENDPOINT=<your_azure_endpoint>
-export DIR_PATH="/<your_path_to_PlugMem>/data"
-export QWEN_BASE_URL="http://<your_qwen_host>:8000/v1"
+export LLM_BASE_URL="https://api.openai.com/v1"
+export LLM_API_KEY="<your_llm_api_key>"
+export LLM_MODEL="gpt-4o-mini"
+
+# Optional: use OpenAI embeddings without a dedicated embedding server
+export OPENAI_API_KEY="<your_openai_api_key>"
+
+# Optional: dedicated embedding server
 export EMBEDDING_BASE_URL="http://<your_embedding_host>:8001/v1/embeddings"
+export EMBEDDING_API_KEY="<your_embedding_api_key>"
+export EMBEDDING_MODEL="text-embedding-3-small"
+
+# Optional: secure the API itself
+export PLUGMEM_API_KEY="<your_service_api_key>"
 ```
-2. Host local inference servers (Qwen + Embedding)
+
+Host local inference servers if you are not using a hosted LLM API:
+
 ```bash
 cd host_local_inference
 # Qwen (vLLM) server
@@ -164,15 +230,14 @@ bash vllm_deploy.sh
 # NV-Embed-v2 server
 bash nv_embed_v2_deploy.sh
 ```
-3. Make needed directory
+
+Start the API directly:
+
 ```bash
-mkdir -p "$DIR_PATH/episodic_memory" \
-         "$DIR_PATH/semantic_memory" \
-         "$DIR_PATH/procedural_memory" \
-         "$DIR_PATH/tag" \
-         "$DIR_PATH/subgoal"
+uv run uvicorn plugmem.api.app:app --host 127.0.0.1 --port 8080
 ```
-4. Run examples for different benchmarks
+
+Run examples for different benchmarks:
    ### WebArena
    ```bash
    cd src/eval/webarena
@@ -220,10 +285,34 @@ The CLI uses XDG paths for config (`~/.config/plugmem/config.toml`), state
 (`~/.local/share/plugmem/chroma/`). All config keys can be overridden at
 runtime via environment variables — `LLM_API_KEY=sk-... plugmem start`.
 
+## Deployment Files
+
+- [Dockerfile](Dockerfile): production image for the API server
+- [docker-compose.yml](docker-compose.yml): local two-container stack for quick development
+- [deploy/remote/compose.yaml](deploy/remote/compose.yaml): server-oriented remote deployment stack
+- [deploy/remote/.env.example](deploy/remote/.env.example): production env template
+- [deploy/systemd/plugmem-compose.service](deploy/systemd/plugmem-compose.service): optional start-on-boot unit
+- [docs/remote-deployment.md](docs/remote-deployment.md): end-to-end remote deployment guide
+
+## High-Throughput Ingestion
+
+PlugMem now supports batched structured ingestion:
+
+```text
+POST /api/v1/graphs/{graph_id}/memories/batch
+```
+
+Notes:
+
+- Only `structured` items are supported in batch mode
+- Each item may carry its own `session_id`
+- Batched ingestion is significantly faster than one-request-per-item inserts
+- Trajectory mode should continue to use `POST /api/v1/graphs/{graph_id}/memories`
+
 ### Development
 
 ```bash
-uv run pytest tests/     # 86 tests, ~13s
+uv run pytest tests/
 uv run mypy plugmem/     # must pass clean
 uv run plugmem --help    # CLI entry point
 ```

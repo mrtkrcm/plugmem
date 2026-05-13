@@ -5,6 +5,7 @@ and provides a ChromaDB EmbeddingFunction adapter.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import os
@@ -94,6 +95,7 @@ class LocalDeterministicEmbeddingClient(EmbeddingClient):
     def __init__(self, dim: int = 32):
         self.dim = dim
 
+    @functools.lru_cache(maxsize=4096)
     def _embed_one(self, text: str) -> List[float]:
         # Each byte → a float in [-1, 1). Cycle the digest if dim > 32.
         # This keeps every component the same magnitude so cosine similarity

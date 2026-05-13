@@ -6,7 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "plugmem"
 version = "0.1.0"
 description = "Pluggable memory system for LLM agents"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
+authors = [{ name = "Murat Karacam" }]
+keywords = ["llm", "memory", "agents", "chromadb", "rag"]
 dependencies = [
     "chromadb>=0.5",
     "fastapi>=0.100",
@@ -22,6 +26,11 @@ dependencies = [
     "tomli>=2.0; python_version<'3.11'",
     "tomli-w>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mrtkrcm/PlugMem"
+Repository = "https://github.com/mrtkrcm/PlugMem"
+Issues = "https://github.com/mrtkrcm/PlugMem/issues"
 
 [project.scripts]
 plugmem = "plugmem.cli.main:app"
@@ -64,5 +73,17 @@ disable_error_code = ["assignment", "arg-type", "return-value", "list-item"]
 module = "plugmem.inference.*"
 disable_error_code = ["assignment", "arg-type"]
 
+[[tool.mypy.overrides]]
+module = "plugmem.cli.*"
+disable_error_code = ["arg-type"]
+
 [tool.setuptools.packages.find]
 include = ["plugmem*"]
+
+[tool.setuptools.package-data]
+"plugmem" = ["api/static/**/*"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:legacy embedding function config:DeprecationWarning",
+]

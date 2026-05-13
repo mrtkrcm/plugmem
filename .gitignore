@@ -3,9 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-# Node.js (OpenClaw plugin)
+# Node.js (OpenClaw plugin) — dist/ also covered by the Python packaging block below
 node_modules/
-dist/
 
 # C extensions
 *.so
@@ -213,5 +212,4 @@ __marimo__/
 # ChromaDB persistent data
 data/
 
-# Local working notes (not for the repo)
-CLAUDE.md
+# (CLAUDE.md is intentionally tracked — see project root)

@@ -1,7 +1,11 @@
 """Graph CRUD endpoints."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
+
+logger = logging.getLogger(__name__)
 
 from plugmem.api.auth import require_api_key
 from plugmem.api.dependencies import get_graph_manager
@@ -63,8 +67,9 @@ async def get_stats(graph_id: str) -> StatsResponse:
     gm = _manager()
     try:
         stats = gm.get_stats(graph_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    except Exception as exc:
+        logger.warning("get_stats(%s) failed: %s", graph_id, exc)
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found") from exc
     return StatsResponse(graph_id=graph_id, stats=stats)
 
 
@@ -106,7 +111,7 @@ async def browse_nodes(
         elif node_type == "semantic":
             d = {"semantic_id": n.semantic_id, "semantic_memory": n.get_semantic_memory(),
                  "tags": [t.tag for t in n.tag_nodes], "is_active": n.is_active,
-                 "credibility": getattr(n, "Credibility", 10), "time": n.time}
+                 "credibility": getattr(n, "credibility", 10), "time": n.time}
         elif node_type == "tag":
             d = {"tag_id": n.tag_id, "tag": n.tag, "importance": n.importance, "time": n.time}
         elif node_type == "subgoal":
@@ -114,7 +119,10 @@ async def browse_nodes(
         elif node_type == "procedural":
             d = {"procedural_id": n.procedural_id,
                  "procedural_memory": n.get_procedural_memory(),
-                 "subgoal": n.subgoal, "time": n.time}
+                 "subgoals": [s.subgoal for s in n.subgoal_nodes] or list(n.subgoals),
+                 "return": n.return_value,
+                 "session_id": n.session_id,
+                 "time": n.time}
         serialized.append(d)
 
     return NodeListResponse(

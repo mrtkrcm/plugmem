@@ -1,4 +1,4 @@
-"""Final probe: launch uvicorn briefly, hit /health, confirm everything wires up."""
+"""Final probe: launch uvicorn briefly, hit /api/v1/health, confirm everything wires up."""
 from __future__ import annotations
 
 import os
@@ -11,7 +11,7 @@ from typing import Tuple
 import requests
 
 from plugmem.cli.config import PlugmemConfig, config_to_env
-from plugmem.cli.daemon import _build_uvicorn_cmd
+from plugmem.cli.daemon import HEALTH_PATH, _build_uvicorn_cmd
 
 
 def run_final_probe(cfg: PlugmemConfig, *, timeout: float = 30.0) -> Tuple[bool, str]:
@@ -35,7 +35,7 @@ def run_final_probe(cfg: PlugmemConfig, *, timeout: float = 30.0) -> Tuple[bool,
 
 
 def _poll_health(cfg: PlugmemConfig, *, timeout: float, proc: subprocess.Popen) -> Tuple[bool, str]:
-    url = "http://{}:{}/health".format(cfg.service.host, cfg.service.port)
+    url = "http://{}:{}{}".format(cfg.service.host, cfg.service.port, HEALTH_PATH)
     deadline = time.monotonic() + timeout
     last_err = ""
     while time.monotonic() < deadline:

@@ -35,6 +35,31 @@ def test_get_graph_not_found(client):
     assert resp.status_code == 404
 
 
+def test_browse_procedural_nodes(client):
+    client.post("/api/v1/graphs", json={"graph_id": "graph_proc"})
+    resp = client.post("/api/v1/graphs/graph_proc/memories", json={
+        "mode": "structured",
+        "session_id": "run-1",
+        "procedural": [
+            {
+                "subgoal": "deploy app",
+                "procedural_memory": "Build, verify, and deploy the release.",
+                "return": 1.0,
+            }
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+
+    resp = client.get("/api/v1/graphs/graph_proc/nodes", params={"node_type": "procedural"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 1
+    row = body["nodes"][0]
+    assert row["subgoals"] == ["deploy app"]
+    assert row["return"] == 1.0
+    assert row["session_id"] == "run-1"
+
+
 def test_delete_graph(client):
     client.post("/api/v1/graphs", json={"graph_id": "deleteme"})
     resp = client.delete("/api/v1/graphs/deleteme")

@@ -5,7 +5,7 @@ Embeddings are stored directly, not lazy-loaded from disk.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -84,7 +84,7 @@ class SemanticNode:
         self.session_id = session_id
         self.date = date
         self.updated = False
-        self.Credibility = credibility
+        self.credibility = credibility
         self.source = source
         self.confidence = confidence
 
@@ -156,7 +156,7 @@ class ProceduralNode:
         self.subgoal_nodes: List[SubgoalNode] = []
         self.time = time
         self.episodic_nodes: List[EpisodicNode] = []
-        self.Return = return_value
+        self.return_value = return_value
         self.source = source
         self.confidence = confidence
         self.session_id = session_id
@@ -192,7 +192,7 @@ class SubgoalNode:
         self._embedding = embedding
         self.child_subgoal: List[SubgoalNode] = []
         self.procedural_nodes: List[ProceduralNode] = []
-        self.activate = False
+        self.is_active = False
         self.importance = 1
         self.edge: List[Any] = []
         self.time = time
@@ -209,10 +209,10 @@ class SubgoalNode:
     def embedding(self, value: Any) -> None:
         self._embedding = value
 
-    def activation(self, procedural_nodes: Optional[List[ProceduralNode]] = None) -> None:
+    def activate(self, procedural_nodes: Optional[List[ProceduralNode]] = None) -> None:
         if procedural_nodes:
             self.procedural_nodes.extend(procedural_nodes)
-        self.activate = True
+        self.is_active = True
 
     def get_subgoal(self) -> str:
         return self.subgoal

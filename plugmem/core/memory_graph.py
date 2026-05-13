@@ -9,7 +9,7 @@ import heapq
 import json
 import logging
 import random
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -47,6 +47,12 @@ from plugmem.prompts.registry import PromptRegistry
 from plugmem.storage.chroma import ChromaStorage, _deserialize_list
 
 logger = logging.getLogger(__name__)
+
+_REASONING_MAP = {
+    "episodic_memory": ("reasoning_episodic", DefaultEpisodicPrompt),
+    "semantic_memory": ("reasoning_semantic", DefaultSemanticPrompt),
+    "procedural_memory": ("reasoning_procedural", DefaultProceduralPrompt),
+}
 
 
 def _passes_metadata_filter(
@@ -132,6 +138,10 @@ class MemoryGraph:
 
         # Session tracking (for LongMemEval episodic retrieval)
         self.session_ids: Dict[str, List[EpisodicNode]] = {}
+        self.session_semantic_ids: Dict[str, List[SemanticNode]] = {}
+        self.session_procedural_ids: Dict[str, List[ProceduralNode]] = {}
+        # Memoized stringified sessions, invalidated when a session gains a node.
+        self._session_str_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------ #
     # Unified load from ChromaDB
@@ -139,13 +149,14 @@ class MemoryGraph:
 
     def load(self) -> Dict[str, int]:
         """Load all nodes from ChromaDB collections into memory."""
+        self._reset_loaded_state()
         self._load_episodic_nodes()
-        self._load_semantic_nodes()
-        self._load_tag_nodes()
-        self._load_subgoal_nodes()
-        self._load_procedural_nodes()
+        sem_data = self._load_semantic_nodes()
+        tag_data = self._load_tag_nodes()
+        sg_data = self._load_subgoal_nodes()
+        proc_data = self._load_procedural_nodes()
         self._rebuild_lookups()
-        self._link_nodes()
+        self._link_nodes(sem_data=sem_data, tag_data=tag_data, sg_data=sg_data, proc_data=proc_data)
 
         stats = {
             "episodic": len(self.episodic_nodes),
@@ -156,6 +167,55 @@ class MemoryGraph:
         }
         logger.info("Graph %s loaded. Stats: %s", self.graph_id, stats)
         return stats
+
+    def _reset_loaded_state(self) -> None:
+        """Clear in-memory state before reloading from storage."""
+        self.episodic_nodes = []
+        self.semantic_nodes = []
+        self.tag_nodes = []
+        self.subgoal_nodes = []
+        self.procedural_nodes = []
+
+        self.semantic_time = 0
+        self.procedural_time = 0
+
+        self.tag2node = {}
+        self.subgoal2node = {}
+        self.episodic_id2node = {}
+        self.semantic_id2node = {}
+        self.procedural_id2node = {}
+        self.subgoal_id2node = {}
+        self.tag_id2node = {}
+
+        self.session_ids = {}
+        self.session_semantic_ids = {}
+        self.session_procedural_ids = {}
+        self._session_str_cache = {}
+
+    def _track_session_node(self, node_type: str, node) -> None:
+        sid = getattr(node, "session_id", None)
+        if sid is None:
+            return
+        if node_type == "episodic":
+            self.session_ids.setdefault(sid, []).append(node)
+            self._session_str_cache.pop(sid, None)
+        elif node_type == "semantic":
+            self.session_semantic_ids.setdefault(sid, []).append(node)
+        elif node_type == "procedural":
+            self.session_procedural_ids.setdefault(sid, []).append(node)
+
+    def get_session_nodes(self, session_id: str) -> Dict[str, List[Any]]:
+        return {
+            "episodic": self.session_ids.get(session_id, []),
+            "semantic": self.session_semantic_ids.get(session_id, []),
+            "procedural": self.session_procedural_ids.get(session_id, []),
+        }
+
+    def list_session_ids(self) -> List[str]:
+        seen = set(self.session_ids)
+        seen.update(self.session_semantic_ids)
+        seen.update(self.session_procedural_ids)
+        return sorted(seen)
 
     def _load_episodic_nodes(self) -> None:
         data = self.storage.get_all_episodic(self.graph_id)
@@ -171,9 +231,7 @@ class MemoryGraph:
                 reward=meta.get("reward", ""),
             )
             self.episodic_nodes.append(node)
-            # Track sessions
-            if node.session_id is not None:
-                self.session_ids.setdefault(node.session_id, []).append(node)
+            self._track_session_node("episodic", node)
 
     @staticmethod
     def _safe_embeddings(data: Dict, fallback_len: int) -> list:
@@ -183,7 +241,7 @@ class MemoryGraph:
             return [None] * fallback_len
         return list(embs)
 
-    def _load_semantic_nodes(self) -> None:
+    def _load_semantic_nodes(self) -> Dict:
         data = self.storage.get_all_semantic(self.graph_id)
         docs = data.get("documents", [])
         metas = data.get("metadatas", [])
@@ -206,9 +264,11 @@ class MemoryGraph:
             )
             node.tags = _deserialize_list(meta.get("tags", "[]"))
             self.semantic_nodes.append(node)
+            self._track_session_node("semantic", node)
             self.semantic_time = max(self.semantic_time, _time + 1)
+        return data
 
-    def _load_tag_nodes(self) -> None:
+    def _load_tag_nodes(self) -> Dict:
         data = self.storage.get_all_tags(self.graph_id)
         docs = data.get("documents", [])
         metas = data.get("metadatas", [])
@@ -222,8 +282,9 @@ class MemoryGraph:
                 importance=meta.get("importance", 1),
             )
             self.tag_nodes.append(node)
+        return data
 
-    def _load_subgoal_nodes(self) -> None:
+    def _load_subgoal_nodes(self) -> Dict:
         data = self.storage.get_all_subgoals(self.graph_id)
         docs = data.get("documents", [])
         metas = data.get("metadatas", [])
@@ -236,8 +297,9 @@ class MemoryGraph:
                 time=meta.get("time", 0),
             )
             self.subgoal_nodes.append(node)
+        return data
 
-    def _load_procedural_nodes(self) -> None:
+    def _load_procedural_nodes(self) -> Dict:
         data = self.storage.get_all_procedural(self.graph_id)
         docs = data.get("documents", [])
         metas = data.get("metadatas", [])
@@ -254,7 +316,9 @@ class MemoryGraph:
                 session_id=meta.get("session_id"),
             )
             self.procedural_nodes.append(node)
+            self._track_session_node("procedural", node)
             self.procedural_time = max(self.procedural_time, node.time + 1)
+        return data
 
     def _rebuild_lookups(self) -> None:
         self.episodic_id2node = {n.episodic_id: n for n in self.episodic_nodes}
@@ -265,13 +329,46 @@ class MemoryGraph:
         self.subgoal2node = {n.subgoal: n for n in self.subgoal_nodes}
         self.procedural_id2node = {n.procedural_id: n for n in self.procedural_nodes}
 
-    def _link_nodes(self) -> None:
+    def _find_matching_subgoal(
+        self,
+        subgoal: str,
+        subgoal_embedding,
+    ) -> Optional[SubgoalNode]:
+        """Return the best existing subgoal candidate without mutating state."""
+        if not self.subgoal_nodes:
+            return None
+
+        best_value = -1.0
+        best_node = None
+        procedural_time = self.procedural_time
+        for sg_node in self.subgoal_nodes:
+            relevance = get_similarity(subgoal_embedding, sg_node.embedding)
+            value = self.subgoal_equal.evaluate(
+                Relevance=relevance,
+                Recency=procedural_time - sg_node.time,
+                Importance=sg_node.importance,
+            )
+            if value > best_value:
+                best_node = sg_node
+                best_value = value
+
+        if best_value < self.subgoal_equal.value_threshold:
+            return None
+        return best_node
+
+    def _link_nodes(
+        self,
+        *,
+        sem_data: Dict,
+        tag_data: Dict,
+        sg_data: Dict,
+        proc_data: Dict,
+    ) -> None:
         """Re-establish in-memory cross-references between nodes using stored IDs."""
         sem_id2node = self.semantic_id2node
         epis_id2node = self.episodic_id2node
 
         # Link semantic -> episodic
-        sem_data = self.storage.get_all_semantic(self.graph_id)
         for meta, sem_node in zip(sem_data.get("metadatas", []), self.semantic_nodes):
             episodic_ids = _deserialize_list(meta.get("episodic_ids", "[]"))
             for eid in episodic_ids:
@@ -284,38 +381,71 @@ class MemoryGraph:
                 if bro_node is not None:
                     sem_node.bro_semantic_nodes.append(bro_node)
 
-        # Link tags <-> semantics
-        tag_data = self.storage.get_all_tags(self.graph_id)
-        for meta, tag_node in zip(tag_data.get("metadatas", []), self.tag_nodes):
-            semantic_ids = _deserialize_list(meta.get("semantic_ids", "[]"))
-            for sid in semantic_ids:
-                sem_node = sem_id2node.get(sid)
-                if sem_node is not None:
-                    tag_node.semantic_nodes.append(sem_node)
+        # Link tags <-> semantics from semantic `tag_ids` metadata. Fall back to
+        # tag-side `semantic_ids` only for older stored graphs.
+        for meta, sem_node in zip(sem_data.get("metadatas", []), self.semantic_nodes):
+            tag_ids = _deserialize_list(meta.get("tag_ids", "[]"))
+            if tag_ids:
+                for tid in tag_ids:
+                    tag_node = self.tag_id2node.get(tid)
+                    if tag_node is None:
+                        continue
+                    if sem_node not in tag_node.semantic_nodes:
+                        tag_node.semantic_nodes.append(sem_node)
+                    if tag_node not in sem_node.tag_nodes:
+                        sem_node.tag_nodes.append(tag_node)
+            else:
+                for tag_str in getattr(sem_node, "tags", []):
+                    tag_node = self.tag2node.get(tag_str)
+                    if tag_node is None:
+                        continue
+                    if sem_node not in tag_node.semantic_nodes:
+                        tag_node.semantic_nodes.append(sem_node)
                     if tag_node not in sem_node.tag_nodes:
                         sem_node.tag_nodes.append(tag_node)
 
-        # Link subgoals -> procedurals
-        sg_data = self.storage.get_all_subgoals(self.graph_id)
-        for meta, sg_node in zip(sg_data.get("metadatas", []), self.subgoal_nodes):
-            proc_ids = _deserialize_list(meta.get("procedural_ids", "[]"))
-            for pid in proc_ids:
-                proc_node = self.procedural_id2node.get(pid)
-                if proc_node is not None:
-                    sg_node.procedural_nodes.append(proc_node)
-                    if sg_node not in proc_node.subgoal_nodes:
-                        proc_node.subgoal_nodes.append(sg_node)
-            if sg_node.procedural_nodes:
-                sg_node.activate = True
+        for meta, tag_node in zip(tag_data.get("metadatas", []), self.tag_nodes):
+            if tag_node.semantic_nodes:
+                continue
+            semantic_ids = _deserialize_list(meta.get("semantic_ids", "[]"))
+            for sid in semantic_ids:
+                sem_node = sem_id2node.get(sid)
+                if sem_node is None:
+                    continue
+                tag_node.semantic_nodes.append(sem_node)
+                if tag_node not in sem_node.tag_nodes:
+                    sem_node.tag_nodes.append(tag_node)
 
-        # Link procedurals -> episodics
-        proc_data = self.storage.get_all_procedural(self.graph_id)
+        # Link procedurals -> episodics and subgoals from procedural metadata.
         for meta, proc_node in zip(proc_data.get("metadatas", []), self.procedural_nodes):
             episodic_ids = _deserialize_list(meta.get("episodic_ids", "[]"))
             for eid in episodic_ids:
                 epis_node = epis_id2node.get(eid)
                 if epis_node is not None:
                     proc_node.episodic_nodes.append(epis_node)
+            subgoal_id = meta.get("subgoal_id")
+            if subgoal_id is not None:
+                sg_node = self.subgoal_id2node.get(subgoal_id)
+                if sg_node is not None:
+                    if proc_node not in sg_node.procedural_nodes:
+                        sg_node.procedural_nodes.append(proc_node)
+                    if sg_node not in proc_node.subgoal_nodes:
+                        proc_node.subgoal_nodes.append(sg_node)
+                    sg_node.is_active = True
+
+        for meta, sg_node in zip(sg_data.get("metadatas", []), self.subgoal_nodes):
+            if sg_node.procedural_nodes:
+                continue
+            proc_ids = _deserialize_list(meta.get("procedural_ids", "[]"))
+            for pid in proc_ids:
+                proc_node = self.procedural_id2node.get(pid)
+                if proc_node is None:
+                    continue
+                sg_node.procedural_nodes.append(proc_node)
+                if sg_node not in proc_node.subgoal_nodes:
+                    proc_node.subgoal_nodes.append(sg_node)
+            if sg_node.procedural_nodes:
+                sg_node.is_active = True
 
     # ------------------------------------------------------------------ #
     # Unified insert
@@ -327,10 +457,11 @@ class MemoryGraph:
 
         # session_id stamps every node created by this insert. Used by the
         # Sessions view + recall audit to group nodes by run.
-        sid: Optional[str] = getattr(memory, "session_id", None)
+        default_sid: Optional[str] = getattr(memory, "session_id", None)
 
-        # 1. Episodic nodes
+        # 1. Episodic nodes — collect first, then batch-insert once.
         episodic_nodes: List[List[EpisodicNode]] = []
+        epis_batch: List[Dict[str, Any]] = []
         for i, trajectory in enumerate(memory.memory["episodic"]):
             episodic_nodes.append([])
             for step in trajectory:
@@ -344,32 +475,36 @@ class MemoryGraph:
                     observation=observation,
                     action=action,
                     time=time_val,
-                    session_id=sid,
+                    session_id=step.get("session_id", default_sid) if isinstance(step, dict) else default_sid,
                     subgoal=step.get("subgoal", "") if isinstance(step, dict) else "",
                     state=step.get("state", "") if isinstance(step, dict) else "",
                     reward=step.get("reward", "") if isinstance(step, dict) else "",
                 )
                 self.episodic_nodes.append(epis_node)
                 episodic_nodes[i].append(epis_node)
-                if sid is not None:
-                    self.session_ids.setdefault(sid, []).append(epis_node)
+                self._track_session_node("episodic", epis_node)
 
-                self.storage.add_episodic(
-                    self.graph_id,
-                    episodic_id=epis_id,
-                    observation=epis_node.observation,
-                    action=epis_node.action,
-                    time=epis_node.time,
-                    session_id=sid,
-                    subgoal=epis_node.subgoal,
-                    state=epis_node.state,
-                    reward=epis_node.reward,
-                )
+                epis_batch.append({
+                    "episodic_id": epis_id,
+                    "observation": epis_node.observation,
+                    "action": epis_node.action,
+                    "time": epis_node.time,
+                    "session_id": epis_node.session_id,
+                    "subgoal": epis_node.subgoal,
+                    "state": epis_node.state,
+                    "reward": epis_node.reward,
+                })
+        if epis_batch:
+            self.storage.add_episodic_batch(self.graph_id, epis_batch)
 
         all_episodic_ids = [n.episodic_id for group in episodic_nodes for n in group]
 
-        # 2. Semantic nodes
+        # 2. Semantic nodes — defer new-tag adds; update_tag stays per-row.
+        # Tags created within this insert are buffered and batch-persisted once.
+        # We no longer update reverse `semantic_ids` metadata on existing tags
+        # for every insert; links are rebuilt from semantic `tag_ids` on load.
         curr_sem_nodes: List[SemanticNode] = []
+        new_tag_by_id: Dict[int, Dict[str, Any]] = {}
         for sem_item, sem_emb_item in zip(
             memory.memory["semantic"],
             memory.memory_embedding["semantic"],
@@ -386,7 +521,7 @@ class MemoryGraph:
                 time=self.semantic_time,
                 source=sem_item.get("source"),
                 confidence=float(sem_item.get("confidence", 0.5)),
-                session_id=sid,
+                session_id=sem_item.get("session_id", default_sid),
             )
 
             # Link episodic nodes
@@ -409,19 +544,15 @@ class MemoryGraph:
                     self.tag_nodes.append(tag_node)
                     self.tag2node[tag_str] = tag_node
                     self.tag_id2node[tag_id] = tag_node
-                    self.storage.add_tag(
-                        self.graph_id, tag_id=tag_id, tag=tag_str,
-                        embedding=tag_emb,
-                        semantic_ids=[sem_id], time=self.semantic_time,
-                    )
+                    new_tag_by_id[tag_id] = {
+                        "tag_id": tag_id,
+                        "tag": tag_str,
+                        "embedding": tag_emb,
+                        "semantic_ids": [sem_id],
+                        "time": self.semantic_time,
+                    }
                 else:
                     tag_node.semantic_nodes.append(sem_node)
-                    self.storage.update_tag(
-                        self.graph_id, tag_id=tag_node.tag_id,
-                        metadata_updates={
-                            "semantic_ids": [s.semantic_id for s in tag_node.semantic_nodes] + [sem_id],
-                        },
-                    )
 
                 sem_node.tag_nodes.append(tag_node)
                 sem_node.tags.append(tag_node.tag)
@@ -430,34 +561,46 @@ class MemoryGraph:
 
             sem_node.tags = list(set(sem_node.tags))
             self.semantic_nodes.append(sem_node)
+            self._track_session_node("semantic", sem_node)
             curr_sem_nodes.append(sem_node)
             self.semantic_time += 1
 
-        # Persist semantic nodes with bro_semantic_ids
+        if new_tag_by_id:
+            self.storage.add_tag_batch(self.graph_id, list(new_tag_by_id.values()))
+
+        curr_semantic_by_id = {n.semantic_id: n for n in curr_sem_nodes}
+
+        # Persist semantic nodes with bro_semantic_ids — collect then batch.
+        sem_batch: List[Dict[str, Any]] = []
         for sem_node in curr_sem_nodes:
             bro_ids = [n.semantic_id for n in curr_sem_nodes if n.semantic_id != sem_node.semantic_id]
-            sem_node.bro_semantic_nodes = [self.semantic_id2node.get(bid) for bid in bro_ids if self.semantic_id2node.get(bid)]
+            sem_node.bro_semantic_nodes = [
+                curr_semantic_by_id[bid] for bid in bro_ids if bid in curr_semantic_by_id
+            ]
 
             embedding_list = sem_node.embedding
             if isinstance(embedding_list, np.ndarray):
                 embedding_list = embedding_list.tolist()
 
-            self.storage.add_semantic(
-                self.graph_id,
-                semantic_id=sem_node.semantic_id,
-                text=sem_node.semantic_memory_str,
-                embedding=embedding_list,
-                tags=sem_node.tags,
-                tag_ids=[t.tag_id for t in sem_node.tag_nodes],
-                time=sem_node.time,
-                session_id=sid,
-                episodic_ids=[e.episodic_id for e in sem_node.episodic_nodes],
-                bro_semantic_ids=bro_ids,
-                source=sem_node.source,
-                confidence=sem_node.confidence,
-            )
+            sem_batch.append({
+                "semantic_id": sem_node.semantic_id,
+                "text": sem_node.semantic_memory_str,
+                "embedding": embedding_list,
+                "tags": sem_node.tags,
+                "tag_ids": [t.tag_id for t in sem_node.tag_nodes],
+                "time": sem_node.time,
+                "session_id": sem_node.session_id,
+                "episodic_ids": [e.episodic_id for e in sem_node.episodic_nodes],
+                "bro_semantic_ids": bro_ids,
+                "source": sem_node.source,
+                "confidence": sem_node.confidence,
+            })
+        if sem_batch:
+            self.storage.add_semantic_batch(self.graph_id, sem_batch)
 
-        # 3. Procedural + subgoal nodes
+        # 3. Procedural + subgoal nodes — collect, flush at end.
+        proc_batch: List[Dict[str, Any]] = []
+        new_subgoal_by_id: Dict[int, Dict[str, Any]] = {}
         for proc_item, proc_emb_item in zip(
             memory.memory["procedural"],
             memory.memory_embedding["procedural"],
@@ -470,17 +613,35 @@ class MemoryGraph:
             subgoal_embedding = proc_emb_item["subgoal"]
             proc_embedding = self.embedder.embed(proc_str)
 
-            # Find or create subgoal
+            # Find the best existing subgoal by similarity, not just exact text,
+            # so procedural inserts can actually consolidate related subgoals.
             subgoal_node = self.subgoal2node.get(subgoal_str)
+            if subgoal_node is None:
+                subgoal_node = self._find_matching_subgoal(subgoal_str, subgoal_embedding)
             is_new_subgoal = subgoal_node is None
             if subgoal_node is not None:
-                # Merge subgoal
-                merged_str = get_new_subgoal(
-                    self.consolidation_llm, subgoal_node.get_subgoal(), subgoal_str,
-                    prompts=self.prompts, graph_id=self.graph_id,
-                )
+                if subgoal_str == subgoal_node.get_subgoal():
+                    merged_str = subgoal_str
+                else:
+                    merged_str = get_new_subgoal(
+                        self.consolidation_llm, subgoal_node.get_subgoal(), subgoal_str,
+                        prompts=self.prompts, graph_id=self.graph_id,
+                    )
+                old_subgoal = subgoal_node.subgoal
+                subgoal_node.subgoal = merged_str
                 subgoal_node.embedding = self.embedder.embed(merged_str)
                 subgoal_node.time = self.procedural_time
+                if old_subgoal != merged_str:
+                    if self.subgoal2node.get(old_subgoal) is subgoal_node:
+                        self.subgoal2node.pop(old_subgoal, None)
+                    existing = self.subgoal2node.get(merged_str)
+                    if existing is None or existing is subgoal_node:
+                        self.subgoal2node[merged_str] = subgoal_node
+                    else:
+                        logger.warning(
+                            "Subgoal alias collision while canonicalizing '%s' -> '%s' in graph %s",
+                            old_subgoal, merged_str, self.graph_id,
+                        )
             else:
                 sg_id = len(self.subgoal_nodes)
                 subgoal_node = SubgoalNode(
@@ -500,16 +661,17 @@ class MemoryGraph:
                 return_value=proc_item.get("return", 0.0),
                 source=proc_item.get("source"),
                 confidence=float(proc_item.get("confidence", 0.5)),
-                session_id=sid,
+                session_id=proc_item.get("session_id", default_sid),
             )
             traj_num = proc_item.get("trajectory_num", 0)
             if traj_num < len(episodic_nodes):
                 proc_node.episodic_nodes = list(episodic_nodes[traj_num])
 
-            subgoal_node.activation([proc_node])
+            subgoal_node.activate([proc_node])
             proc_node.subgoal_nodes.append(subgoal_node)
             proc_node.subgoals.append(subgoal_node.subgoal)
             self.procedural_nodes.append(proc_node)
+            self._track_session_node("procedural", proc_node)
 
             # Persist
             sg_emb = subgoal_node.embedding
@@ -517,35 +679,52 @@ class MemoryGraph:
                 sg_emb = sg_emb.tolist()
             proc_emb_list = proc_embedding if isinstance(proc_embedding, list) else proc_embedding.tolist() if isinstance(proc_embedding, np.ndarray) else proc_embedding
 
-            self.storage.add_procedural(
-                self.graph_id, procedural_id=proc_id, text=proc_str,
-                embedding=proc_emb_list,
-                subgoal=subgoal_node.subgoal, subgoal_id=subgoal_node.subgoal_id,
-                episodic_ids=[e.episodic_id for e in proc_node.episodic_nodes],
-                time=self.procedural_time, return_value=proc_node.Return,
-                source=proc_node.source,
-                confidence=proc_node.confidence,
-                session_id=sid,
-            )
-            # Persist subgoal
+            proc_batch.append({
+                "procedural_id": proc_id,
+                "text": proc_str,
+                "embedding": proc_emb_list,
+                "subgoal": subgoal_node.subgoal,
+                "subgoal_id": subgoal_node.subgoal_id,
+                "episodic_ids": [e.episodic_id for e in proc_node.episodic_nodes],
+                "time": self.procedural_time,
+                "return_value": proc_node.return_value,
+                "source": proc_node.source,
+                "confidence": proc_node.confidence,
+                "session_id": proc_node.session_id,
+            })
+            sg_proc_ids = [p.procedural_id for p in subgoal_node.procedural_nodes]
             if is_new_subgoal:
-                self.storage.add_subgoal(
-                    self.graph_id, subgoal_id=subgoal_node.subgoal_id,
-                    subgoal=subgoal_node.subgoal, embedding=sg_emb,
-                    procedural_ids=[p.procedural_id for p in subgoal_node.procedural_nodes],
-                    time=subgoal_node.time,
-                )
+                new_subgoal_by_id[subgoal_node.subgoal_id] = {
+                    "subgoal_id": subgoal_node.subgoal_id,
+                    "subgoal": subgoal_node.subgoal,
+                    "embedding": sg_emb,
+                    "procedural_ids": sg_proc_ids,
+                    "time": subgoal_node.time,
+                }
             else:
-                self.storage.update_subgoal(
-                    self.graph_id, subgoal_id=subgoal_node.subgoal_id,
-                    subgoal=subgoal_node.subgoal, embedding=sg_emb,
-                    metadata_updates={
-                        "procedural_ids": [p.procedural_id for p in subgoal_node.procedural_nodes],
-                        "time": subgoal_node.time,
-                    },
-                )
+                pending = new_subgoal_by_id.get(subgoal_node.subgoal_id)
+                if pending is not None:
+                    # Subgoal created earlier in this insert; mutate the
+                    # pending row instead of updating a not-yet-persisted row.
+                    pending["subgoal"] = subgoal_node.subgoal
+                    pending["embedding"] = sg_emb
+                    pending["procedural_ids"] = sg_proc_ids
+                    pending["time"] = subgoal_node.time
+                else:
+                    self.storage.update_subgoal(
+                        self.graph_id, subgoal_id=subgoal_node.subgoal_id,
+                        subgoal=subgoal_node.subgoal, embedding=sg_emb,
+                        metadata_updates={
+                            "time": subgoal_node.time,
+                        },
+                    )
 
             self.procedural_time += 1
+
+        if proc_batch:
+            self.storage.add_procedural_batch(self.graph_id, proc_batch)
+        if new_subgoal_by_id:
+            self.storage.add_subgoal_batch(self.graph_id, list(new_subgoal_by_id.values()))
 
         self._rebuild_lookups()
         logger.info("Inserted memory into graph %s", self.graph_id)
@@ -565,13 +744,19 @@ class MemoryGraph:
         if tag_embedding is None:
             tag_embedding = self.embedder.embed(tag)
 
+        # Batch-embed any tag nodes missing an embedding to avoid per-node round-trips.
+        missing = [tn for tn in self.tag_nodes if tn.embedding is None]
+        if missing:
+            embeddings = self.embedder.embed_batch([tn.tag for tn in missing])
+            for tn, emb in zip(missing, embeddings):
+                tn.embedding = emb
+
         evaluations: List[Dict[str, Any]] = []
         values = []
+        semantic_time = self.semantic_time
         for tag_node in self.tag_nodes:
-            if tag_node.embedding is None:
-                tag_node.embedding = self.embedder.embed(tag_node.tag)
             relevance = get_similarity(tag_embedding, tag_node.embedding)
-            recency = self.semantic_time - tag_node.time
+            recency = semantic_time - tag_node.time
             value = value_func.evaluate(
                 Relevance=relevance,
                 Recency=recency,
@@ -603,7 +788,7 @@ class MemoryGraph:
 
         if not result and make_tag_nodes:
             tag_id = len(self.tag_nodes)
-            tag_node = TagNode(tag=tag, tag_id=tag_id, embedding=tag_embedding, time=self.semantic_time)
+            tag_node = TagNode(tag=tag, tag_id=tag_id, embedding=tag_embedding, time=semantic_time)
             self.tag_nodes.append(tag_node)
             self.tag2node[tag] = tag_node
             self.tag_id2node[tag_id] = tag_node
@@ -642,19 +827,13 @@ class MemoryGraph:
 
         # Phase 1: direct embedding similarity top-5
         sem_node_topk = 5
-        sim_list = []
-        for node in self.semantic_nodes:
-            if not node.is_active:
-                continue
-            if not _passes_metadata_filter(node, min_confidence, source_in):
-                continue
-            if node.embedding is None:
-                node.embedding = self.embedder.embed(node.get_semantic_memory())
-            sim = get_similarity(query_embedding, node.embedding)
-            sim_list.append((sim, node.semantic_id))
-
-        sim_list.sort(reverse=True, key=lambda x: x[0])
-        top_sim_nodes = [self.semantic_id2node[sid] for _, sid in sim_list[:sem_node_topk] if sid in self.semantic_id2node]
+        top_sim_nodes, sim_list = self._semantic_similarity_candidates(
+            query_embedding=query_embedding,
+            n_results=max(sem_node_topk, value_func.k * 2),
+            min_confidence=min_confidence,
+            source_in=source_in,
+        )
+        top_sim_nodes = top_sim_nodes[:sem_node_topk]
 
         if _trace is not None:
             _trace["semantic_topk_by_similarity"] = [
@@ -712,6 +891,7 @@ class MemoryGraph:
 
         candidate_trace: List[Dict[str, Any]] = []
         values = []
+        semantic_time = self.semantic_time
         for sem_node in candidate_nodes:
             if sem_node.embedding is None:
                 sem_node.embedding = self.embedder.embed(sem_node.get_semantic_memory())
@@ -719,10 +899,10 @@ class MemoryGraph:
             num_tags = max(1, len(sem_node.tags))
             importance_score = tag_vote.get(sem_node.semantic_id, {}).get("importance", 0.0) / num_tags
             tag_votes_cnt = int(tag_vote.get(sem_node.semantic_id, {}).get("cnt", 0))
-            recency = (self.semantic_time - sem_node.time) if isinstance(sem_node.time, int) else 0
+            recency = (semantic_time - sem_node.time) if isinstance(sem_node.time, int) else 0
             value = value_func.evaluate(
                 Relevance=relevance, Recency=recency,
-                Importance=importance_score, Credibility=sem_node.Credibility,
+                Importance=importance_score, Credibility=sem_node.credibility,
             )
             values.append((value, sem_node.semantic_id))
             if _trace is not None:
@@ -733,7 +913,7 @@ class MemoryGraph:
                     "relevance": float(relevance),
                     "recency": int(recency),
                     "importance": float(importance_score),
-                    "credibility": int(getattr(sem_node, "Credibility", 0)),
+                    "credibility": int(getattr(sem_node, "credibility", 0)),
                     "tag_votes": tag_votes_cnt,
                     "value": float(value),
                     "is_active": bool(sem_node.is_active),
@@ -775,12 +955,17 @@ class MemoryGraph:
 
         embedding = semantic_memory_embedding["semantic_memory"]
         values = []
-        for sem_node in self.semantic_nodes:
+        semantic_time = self.semantic_time
+        candidate_nodes, _ = self._semantic_similarity_candidates(
+            query_embedding=embedding,
+            n_results=max(value_func.k * 8, 20),
+        )
+        for sem_node in candidate_nodes:
             relevance = get_similarity(embedding, sem_node.embedding)
-            recency = (self.semantic_time - sem_node.time) if isinstance(sem_node.time, int) else 0
+            recency = (semantic_time - sem_node.time) if isinstance(sem_node.time, int) else 0
             value = value_func.evaluate(
                 Relevance=relevance, Recency=recency,
-                Credibility=sem_node.Credibility,
+                Credibility=sem_node.credibility,
             )
             values.append((value, sem_node.semantic_id))
 
@@ -796,6 +981,85 @@ class MemoryGraph:
                 result.append(node)
         return result
 
+    def _semantic_similarity_candidates(
+        self,
+        *,
+        query_embedding,
+        n_results: int,
+        min_confidence: Optional[float] = None,
+        source_in: Optional[List[str]] = None,
+    ) -> Tuple[List[SemanticNode], List[Tuple[float, int]]]:
+        """Get semantic candidates by vector similarity, preferring Chroma query.
+
+        Returns candidate nodes plus `(similarity, semantic_id)` tuples in ranked
+        order for trace/debug use. Falls back to an in-memory full scan if the
+        vector store query is unavailable or returns too few usable rows.
+        """
+        target = max(1, min(n_results, len(self.semantic_nodes)))
+        if target <= 0:
+            return [], []
+
+        ranked_ids: List[int] = []
+        seen_ids: set[int] = set()
+
+        try:
+            result = self.storage.query_semantic(
+                self.graph_id,
+                query_embedding=query_embedding,
+                n_results=min(max(target * 3, 10), max(len(self.semantic_nodes), 1)),
+            )
+            metas = (result.get("metadatas") or [[]])[0] or []
+            for meta in metas:
+                sid = meta.get("semantic_id")
+                if sid is None or sid in seen_ids:
+                    continue
+                seen_ids.add(sid)
+                ranked_ids.append(sid)
+                if len(ranked_ids) >= target:
+                    break
+        except Exception:
+            logger.debug("semantic candidate query failed; falling back to full scan", exc_info=True)
+
+        candidate_nodes: List[SemanticNode] = []
+        for sid in ranked_ids:
+            node = self.semantic_id2node.get(sid)
+            if node is None or not node.is_active:
+                continue
+            if not _passes_metadata_filter(node, min_confidence, source_in):
+                continue
+            if node.embedding is None:
+                node.embedding = self.embedder.embed(node.get_semantic_memory())
+            candidate_nodes.append(node)
+
+        if len(candidate_nodes) < target:
+            fallback = []
+            for node in self.semantic_nodes:
+                if node.semantic_id in seen_ids:
+                    continue
+                if not node.is_active:
+                    continue
+                if not _passes_metadata_filter(node, min_confidence, source_in):
+                    continue
+                if node.embedding is None:
+                    node.embedding = self.embedder.embed(node.get_semantic_memory())
+                sim = get_similarity(query_embedding, node.embedding)
+                fallback.append((sim, node.semantic_id))
+            fallback.sort(reverse=True, key=lambda x: x[0])
+            for _, sid in fallback:
+                node = self.semantic_id2node.get(sid)
+                if node is None:
+                    continue
+                candidate_nodes.append(node)
+                if len(candidate_nodes) >= target:
+                    break
+
+        sim_list = []
+        for node in candidate_nodes:
+            sim_list.append((get_similarity(query_embedding, node.embedding), node.semantic_id))
+        sim_list.sort(reverse=True, key=lambda x: x[0])
+        ordered_nodes = [self.semantic_id2node[sid] for _, sid in sim_list if sid in self.semantic_id2node]
+        return ordered_nodes, sim_list
+
     def retrieve_episodic_nodes(self, observation: str) -> str:
         semantic_nodes = self.retrieve_semantic_nodes_wo_tag(
             semantic_memory={"semantic_memory": observation},
@@ -805,33 +1069,38 @@ class MemoryGraph:
 
         vote_session: Dict[str, int] = {}
         for sn in semantic_nodes:
-            sid = getattr(sn, "session_id", None)
+            sid = sn.session_id
             if sid is not None:
                 vote_session[sid] = vote_session.get(sid, 0) + 1
 
-        episodic_memory_str = ""
+        parts: List[str] = []
         cnt = 0
         for key, value in vote_session.items():
             if value >= 3:
-                episodic_memory_str += f"Relevant Memory {cnt}:\n{self.get_session_memory(key)}"
+                parts.append(f"Relevant Memory {cnt}:\n{self.get_session_memory(key)}")
                 cnt += 1
         for sn in semantic_nodes:
-            sid = getattr(sn, "session_id", None)
+            sid = sn.session_id
             if sid is None or vote_session.get(sid, 0) < 3:
-                episodic_memory_str += f"Relevant Memory {cnt}:\n{sn.get_semantic_memory()}\n"
+                parts.append(f"Relevant Memory {cnt}:\n{sn.get_semantic_memory()}\n")
                 cnt += 1
-        return episodic_memory_str
+        return "".join(parts)
 
     def get_session_memory(self, session_id: str) -> str:
         if session_id not in self.session_ids:
             return "There is no relevant memory"
+        cached = self._session_str_cache.get(session_id)
+        if cached is not None:
+            return cached
         nodes = self.session_ids[session_id]
         parts = []
         if nodes:
             parts.append(nodes[0].get_date())
         for node in nodes:
             parts.append(node.get_episodic_memory(date=False))
-        return "\n".join(parts) + "\n"
+        out = "\n".join(parts) + "\n"
+        self._session_str_cache[session_id] = out
+        return out
 
     def retrieve_subgoal_nodes(
         self, subgoal: str, subgoal_embedding=None, value_func: ValueBase = None,
@@ -841,11 +1110,12 @@ class MemoryGraph:
 
         best_value = -1.0
         best_node = None
+        procedural_time = self.procedural_time
         for sg_node in self.subgoal_nodes:
             relevance = get_similarity(subgoal_embedding, sg_node.embedding)
             value = value_func.evaluate(
                 Relevance=relevance,
-                Recency=self.procedural_time - sg_node.time,
+                Recency=procedural_time - sg_node.time,
                 Importance=sg_node.importance,
             )
             if value > best_value:
@@ -880,14 +1150,15 @@ class MemoryGraph:
 
         candidate_trace: List[Dict[str, Any]] = []
         values = []
+        procedural_time = self.procedural_time
         for proc_node in subgoal_node.procedural_nodes:
             if not _passes_metadata_filter(proc_node, min_confidence, source_in):
                 continue
             relevance = get_similarity(embedding, proc_node.embedding)
-            recency = self.procedural_time - proc_node.time
+            recency = procedural_time - proc_node.time
             value = value_func.evaluate(
                 Relevance=relevance,
-                Return=proc_node.Return,
+                Return=proc_node.return_value,
                 Recency=recency,
             )
             values.append((value, proc_node.procedural_id))
@@ -898,7 +1169,7 @@ class MemoryGraph:
                     "subgoal": subgoal_node.subgoal,
                     "relevance": float(relevance),
                     "recency": int(recency),
-                    "return": float(proc_node.Return),
+                    "return": float(proc_node.return_value),
                     "value": float(value),
                 })
 
@@ -955,12 +1226,7 @@ class MemoryGraph:
             )
         logger.info("mode: %s", mode)
 
-        _reasoning_map = {
-            "episodic_memory": ("reasoning_episodic", DefaultEpisodicPrompt),
-            "semantic_memory": ("reasoning_semantic", DefaultSemanticPrompt),
-            "procedural_memory": ("reasoning_procedural", DefaultProceduralPrompt),
-        }
-        prompt_name, fallback_cls = _reasoning_map.get(mode, ("reasoning_semantic", DefaultSemanticPrompt))
+        prompt_name, fallback_cls = _REASONING_MAP.get(mode, ("reasoning_semantic", DefaultSemanticPrompt))
         if self.prompts is not None:
             prompt_template = self.prompts.get(prompt_name, graph_id=self.graph_id)
         else:
@@ -994,14 +1260,18 @@ class MemoryGraph:
             if not semantic_nodes:
                 semantic_memory_str = "No relevant fact"
             else:
-                for i, sn in enumerate(semantic_nodes):
-                    semantic_memory_str += f"Fact {i}: {sn.get_semantic_memory()}\n"
+                semantic_memory_str = "\n".join(
+                    f"Fact {i}: {sn.get_semantic_memory()}"
+                    for i, sn in enumerate(semantic_nodes)
+                ) + "\n"
         elif mode == "procedural_memory":
             if not procedural_nodes:
                 procedural_memory_str = "No relevant experiences"
             else:
-                for i, pn in enumerate(procedural_nodes):
-                    procedural_memory_str += f"Experience {i}: {pn.get_procedural_memory()}\n"
+                procedural_memory_str = "\n".join(
+                    f"Experience {i}: {pn.get_procedural_memory()}"
+                    for i, pn in enumerate(procedural_nodes)
+                ) + "\n"
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -1135,12 +1405,7 @@ class MemoryGraph:
                     for i, n in enumerate(procedural_nodes)
                 )
 
-        _reasoning_map = {
-            "episodic_memory": ("reasoning_episodic", DefaultEpisodicPrompt),
-            "semantic_memory": ("reasoning_semantic", DefaultSemanticPrompt),
-            "procedural_memory": ("reasoning_procedural", DefaultProceduralPrompt),
-        }
-        prompt_name, fallback_cls = _reasoning_map.get(mode, ("reasoning_semantic", DefaultSemanticPrompt))
+        prompt_name, fallback_cls = _REASONING_MAP.get(mode, ("reasoning_semantic", DefaultSemanticPrompt))
         if self.prompts is not None:
             prompt_template = self.prompts.get(prompt_name, graph_id=self.graph_id)
         else:
@@ -1274,7 +1539,7 @@ class MemoryGraph:
         if credibility_decay != 0:
             for sn in self.semantic_nodes:
                 if sn.time < time_st and sn.is_active:
-                    sn.Credibility -= credibility_decay
+                    sn.credibility -= credibility_decay
 
         # Determine scope
         if only_update_recent_window is None:
@@ -1293,7 +1558,7 @@ class MemoryGraph:
             if sem_node.updated:
                 continue
 
-            if sem_node.Credibility < min_credibility_to_keep_active:
+            if sem_node.credibility < min_credibility_to_keep_active:
                 sem_node.is_active = False
                 self.storage.update_semantic(
                     self.graph_id, sem_node.semantic_id,

@@ -8,6 +8,7 @@ import requests
 import typer
 
 from plugmem.cli.config import default_config_path, load_config
+from plugmem.cli.daemon import HEALTH_PATH
 from plugmem.cli.wizard.ui import console, error
 
 
@@ -21,7 +22,7 @@ def health_cmd(
 ) -> None:
     path = config_path or default_config_path()
     cfg = load_config(path)
-    url = "http://{}:{}/health".format(cfg.service.host, cfg.service.port)
+    url = "http://{}:{}{}".format(cfg.service.host, cfg.service.port, HEALTH_PATH)
 
     try:
         resp = requests.get(url, timeout=5.0)

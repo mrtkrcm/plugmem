@@ -1,5 +1,7 @@
 """Tests for memory insertion endpoints."""
 
+import plugmem.core.memory_graph as mg_module
+
 
 def test_insert_structured_semantic(client):
     client.post("/api/v1/graphs", json={"graph_id": "mem_test"})
@@ -31,6 +33,42 @@ def test_insert_structured_procedural(client):
     })
     assert resp.status_code == 200
     assert resp.json()["stats"]["procedural"] == 1
+
+
+def test_insert_structured_procedural_consolidates_similar_subgoal(client, monkeypatch):
+    client.post("/api/v1/graphs", json={"graph_id": "proc_merge_test"})
+
+    first = client.post("/api/v1/graphs/proc_merge_test/memories", json={
+        "mode": "structured",
+        "procedural": [
+            {"subgoal": "deploy app", "procedural_memory": "build container image"},
+        ],
+    })
+    assert first.status_code == 200, first.text
+
+    original_find = mg_module.MemoryGraph._find_matching_subgoal
+
+    def fake_find(self, subgoal, subgoal_embedding):
+        if subgoal == "ship app":
+            return self.subgoal_nodes[0]
+        return original_find(self, subgoal, subgoal_embedding)
+
+    monkeypatch.setattr(mg_module.MemoryGraph, "_find_matching_subgoal", fake_find)
+    monkeypatch.setattr(mg_module, "get_new_subgoal", lambda *args, **kwargs: "ship release")
+
+    second = client.post("/api/v1/graphs/proc_merge_test/memories", json={
+        "mode": "structured",
+        "procedural": [
+            {"subgoal": "ship app", "procedural_memory": "roll out canary deploy"},
+        ],
+    })
+    assert second.status_code == 200, second.text
+
+    resp = client.get("/api/v1/graphs/proc_merge_test/nodes", params={"node_type": "subgoal"})
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()["nodes"]
+    assert len(nodes) == 1
+    assert nodes[0]["subgoal"] == "ship release"
 
 
 def test_insert_structured_episodic(client):
@@ -99,3 +137,50 @@ def test_insert_without_session_id_leaves_field_null(client):
     r = client.get("/api/v1/graphs/no_sess_test/search?node_type=semantic")
     nodes = r.json()["nodes"]
     assert nodes[0]["session_id"] is None
+
+
+def test_batch_insert_structured_items(client):
+    client.post("/api/v1/graphs", json={"graph_id": "batch_test"})
+    resp = client.post("/api/v1/graphs/batch_test/memories/batch", json={
+        "items": [
+            {
+                "mode": "structured",
+                "session_id": "run-A",
+                "semantic": [{"semantic_memory": "fact A", "tags": ["shared"]}],
+                "procedural": [{"subgoal": "do A", "procedural_memory": "how A"}],
+            },
+            {
+                "mode": "structured",
+                "session_id": "run-B",
+                "episodic": [[{"observation": "obs B", "action": "act B"}]],
+                "semantic": [{"semantic_memory": "fact B", "tags": ["shared"]}],
+            },
+        ]
+    })
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["stats"]["semantic"] == 2
+    assert data["stats"]["procedural"] == 1
+    assert data["stats"]["episodic"] == 1
+
+    sessions = client.get("/api/v1/graphs/batch_test/sessions").json()["sessions"]
+    assert "run-A" in sessions
+    assert "run-B" in sessions
+
+
+def test_batch_insert_rejects_trajectory_items(client):
+    client.post("/api/v1/graphs", json={"graph_id": "batch_err"})
+    resp = client.post("/api/v1/graphs/batch_err/memories/batch", json={
+        "items": [
+            {"mode": "structured", "semantic": [{"semantic_memory": "ok", "tags": []}]},
+            {"mode": "trajectory", "goal": "g", "steps": [{"observation": "o", "action": "a"}]},
+        ]
+    })
+    assert resp.status_code == 422
+
+
+def test_batch_insert_empty_is_noop(client):
+    client.post("/api/v1/graphs", json={"graph_id": "batch_empty"})
+    resp = client.post("/api/v1/graphs/batch_empty/memories/batch", json={"items": []})
+    assert resp.status_code == 200
+    assert resp.json()["stats"]["semantic"] == 0

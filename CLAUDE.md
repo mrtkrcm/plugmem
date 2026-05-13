@@ -13,13 +13,13 @@ plugmem/
   storage/        ChromaDB persistence wrapper
   config.py       Pydantic config model
   graph_manager.py
-tests/            pytest suite (87 tests)
+tests/            pytest suite (86 tests)
 ```
 
 ## Key Principles
 
 - **All LLM calls go through `LLMClient`** (or `LLMRouter` for role-specific routing). Never call an API directly.
-- **All storage goes through `ChromaStorage`**. No direct ChromaDB client usage outside it.
+- **All storage goes through `ChromaStorage`**. Raw `chromadb` client construction is confined to `api/dependencies.py::build_chroma_storage` (the DI factory). Nothing else should import `chromadb` directly.
 - **Routes call `get_llm()` / `get_embedder()` directly** (not via Depends) — this is a codebase-wide pattern. Tests manage state via `deps.reset_singletons()`.
 - **Value functions** (`ValueBase`) control retrieval scoring. Pluggable per node type (tag, semantic, procedural, subgoal).
 
@@ -72,4 +72,4 @@ uv pip install -e ".[dev]"  # install with dev deps (pytest, mypy)
 | `core/memory_graph.py` | 1383 | Core business logic: insert, retrieve, reason, consolidate |
 | `storage/chroma.py` | 625 | 30 CRUD functions across 5 node types + audit log |
 | `api/routes/inspector.py` | 709 | Inspector UI backend + serializers |
-| `api/schemas.py` | 381 | All request/response models |
+| `api/schemas.py` | 382 | All request/response models |

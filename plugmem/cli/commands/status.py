@@ -7,7 +7,7 @@ from typing import Optional
 import typer
 
 from plugmem.cli.config import default_config_path, load_config
-from plugmem.cli.daemon import daemon_status
+from plugmem.cli.daemon import HEALTH_PATH, daemon_status
 from plugmem.cli.wizard.ui import console, error
 
 
@@ -38,4 +38,4 @@ def status_cmd(
             mark = "[green]✓[/green]" if ok else "[red]✗[/red]"
             console.print("  {} {}".format(mark, f))
     elif state["running"]:
-        console.print("  [yellow]![/yellow] /health did not respond")
+        console.print("  [yellow]![/yellow] {} did not respond".format(HEALTH_PATH))

@@ -44,6 +44,8 @@ def probe_llm(
     model: str,
     timeout: float = 15.0,
 ) -> tuple[bool, str]:
+    # Intentional bypass of LLMClient: this is a pre-flight reachability probe
+    # used by `plugmem init` before any config (and thus any LLMClient) exists.
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:

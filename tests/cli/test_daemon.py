@@ -7,10 +7,12 @@ import pytest
 
 from plugmem.cli.config import PlugmemConfig, default_pid_file
 from plugmem.cli.daemon import (
+    HEALTH_PATH,
     DaemonError,
     _build_uvicorn_cmd,
     _clear_pid_file,
     _is_running,
+    _quick_health,
     _read_pid,
     daemon_status,
     start_daemon,
@@ -64,3 +66,26 @@ def test_start_daemon_raises_if_already_running(monkeypatch):
 def test_stop_daemon_returns_false_when_not_running(monkeypatch):
     monkeypatch.setattr("plugmem.cli.daemon._read_pid", lambda: None)
     assert stop_daemon() is False
+
+
+def test_quick_health_uses_api_v1_health(monkeypatch):
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"status": "ok"}
+
+    def fake_get(url, timeout):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr("plugmem.cli.daemon.requests.get", fake_get)
+    cfg = PlugmemConfig(service={"host": "127.0.0.1", "port": 18081})
+
+    data = _quick_health(cfg)
+    assert data == {"status": "ok"}
+    assert seen["url"] == f"http://127.0.0.1:18081{HEALTH_PATH}"

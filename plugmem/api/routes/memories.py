@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from plugmem.api.auth import require_api_key
 from plugmem.api.dependencies import get_embedder, get_graph_manager, get_llm
-from plugmem.api.schemas import MemoryInsertRequest, MemoryInsertResponse
+from plugmem.api.schemas import MemoryBatchInsertRequest, MemoryInsertRequest, MemoryInsertResponse
 from plugmem.core.memory import Memory
 from plugmem.graph_manager import GraphManager
 
@@ -32,6 +32,34 @@ async def insert_memories(graph_id: str, body: MemoryInsertRequest) -> MemoryIns
         return _insert_trajectory(graph, body)
     else:
         return _insert_structured(graph, body)
+
+
+@router.post("/{graph_id}/memories/batch", response_model=MemoryInsertResponse)
+async def insert_memories_batch(graph_id: str, body: MemoryBatchInsertRequest) -> MemoryInsertResponse:
+    gm = _manager()
+
+    try:
+        graph = gm.get_graph(graph_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+
+    if not body.items:
+        return MemoryInsertResponse(status="ok", stats=graph.storage.get_graph_stats(graph.graph_id))
+
+    invalid = [i for i, item in enumerate(body.items) if item.mode != "structured"]
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"batch insert supports structured mode only; invalid items at indexes {invalid}",
+        )
+
+    embedder = get_embedder()
+    mem = Memory.from_structured(embedder=embedder, time=graph.semantic_time)
+    for item in body.items:
+        _append_structured_payload(mem, graph, item, embedder)
+
+    graph.insert(mem)
+    return MemoryInsertResponse(status="ok", stats=graph.storage.get_graph_stats(graph.graph_id))
 
 
 def _insert_trajectory(graph, body: MemoryInsertRequest) -> MemoryInsertResponse:
@@ -66,9 +94,16 @@ def _insert_structured(graph, body: MemoryInsertRequest) -> MemoryInsertResponse
     mem = Memory.from_structured(
         embedder=embedder,
         time=graph.semantic_time,
-        session_id=body.session_id,
     )
+    _append_structured_payload(mem, graph, body, embedder)
 
+    graph.insert(mem)
+
+    stats = graph.storage.get_graph_stats(graph.graph_id)
+    return MemoryInsertResponse(status="ok", stats=stats)
+
+
+def _append_structured_payload(mem: Memory, graph, body: MemoryInsertRequest, embedder) -> None:
     # Episodic: list of trajectories (list of step dicts)
     if body.episodic:
         for trajectory in body.episodic:
@@ -80,6 +115,7 @@ def _insert_structured(graph, body: MemoryInsertRequest) -> MemoryInsertResponse
                     "state": step.state,
                     "reward": step.reward,
                     "time": step.time or graph.semantic_time,
+                    "session_id": body.session_id,
                 }
                 for step in trajectory
             ])
@@ -92,6 +128,7 @@ def _insert_structured(graph, body: MemoryInsertRequest) -> MemoryInsertResponse
                 "tags": sem.tags,
                 "source": sem.source,
                 "confidence": sem.confidence,
+                "session_id": body.session_id,
             })
             mem.memory_embedding["semantic"].append({
                 "semantic_memory": embedder.embed(sem.semantic_memory),
@@ -108,12 +145,8 @@ def _insert_structured(graph, body: MemoryInsertRequest) -> MemoryInsertResponse
                 "return": proc.return_value,
                 "source": proc.source,
                 "confidence": proc.confidence,
+                "session_id": body.session_id,
             })
             mem.memory_embedding["procedural"].append({
                 "subgoal": embedder.embed(proc.subgoal),
             })
-
-    graph.insert(mem)
-
-    stats = graph.storage.get_graph_stats(graph.graph_id)
-    return MemoryInsertResponse(status="ok", stats=stats)

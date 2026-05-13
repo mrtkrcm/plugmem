@@ -65,11 +65,11 @@ class ProceduralMemoryInput(BaseModel):
 
 
 class EpisodicStep(BaseModel):
-    observation: str = ""
-    action: str = ""
-    subgoal: str = ""
-    state: str = ""
-    reward: str = ""
+    observation: str = Field("", max_length=100000)
+    action: str = Field("", max_length=100000)
+    subgoal: str = Field("", max_length=5000)
+    state: str = Field("", max_length=10000)
+    reward: str = Field("", max_length=1000)
     time: Any = ""
 
 
@@ -102,17 +102,21 @@ class MemoryInsertResponse(BaseModel):
     stats: Dict[str, int] = Field(default_factory=dict)
 
 
+class MemoryBatchInsertRequest(BaseModel):
+    items: List[MemoryInsertRequest] = Field(default_factory=list)
+
+
 # ------------------------------------------------------------------ #
 # Retrieval
 # ------------------------------------------------------------------ #
 
 class RetrieveRequest(BaseModel):
     observation: str = Field(..., max_length=100000)
-    goal: Optional[str] = None
-    subgoal: Optional[str] = None
-    state: Optional[str] = None
-    task_type: str = ""
-    time: str = ""
+    goal: Optional[str] = Field(None, max_length=10000)
+    subgoal: Optional[str] = Field(None, max_length=5000)
+    state: Optional[str] = Field(None, max_length=10000)
+    task_type: str = Field("", max_length=200)
+    time: str = Field("", max_length=64)
     mode: Optional[str] = Field(
         None,
         description=(
@@ -144,11 +148,11 @@ class RetrieveResponse(BaseModel):
 
 class ReasonRequest(BaseModel):
     observation: str = Field(..., max_length=100000)
-    goal: Optional[str] = None
-    subgoal: Optional[str] = None
-    state: Optional[str] = None
-    task_type: str = ""
-    time: str = ""
+    goal: Optional[str] = Field(None, max_length=10000)
+    subgoal: Optional[str] = Field(None, max_length=5000)
+    state: Optional[str] = Field(None, max_length=10000)
+    task_type: str = Field("", max_length=200)
+    time: str = Field("", max_length=64)
     mode: Optional[str] = None
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     source_in: Optional[List[MemorySource]] = None
@@ -254,12 +258,12 @@ class SemanticUpdateRequest(BaseModel):
 
 
 class RecallTraceRequest(BaseModel):
-    observation: str
-    goal: Optional[str] = None
-    subgoal: Optional[str] = None
-    state: Optional[str] = None
-    task_type: str = ""
-    time: str = ""
+    observation: str = Field(..., max_length=100000)
+    goal: Optional[str] = Field(None, max_length=10000)
+    subgoal: Optional[str] = Field(None, max_length=5000)
+    state: Optional[str] = Field(None, max_length=10000)
+    task_type: str = Field("", max_length=200)
+    time: str = Field("", max_length=64)
     mode: Optional[str] = Field(
         None,
         description=(

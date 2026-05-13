@@ -14,7 +14,7 @@ This module detects the flat shape and wraps it into a single trajectory.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 
 def normalize_memory(memory: Any) -> Any:

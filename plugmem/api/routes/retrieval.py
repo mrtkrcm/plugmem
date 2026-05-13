@@ -1,8 +1,11 @@
 """Retrieve and Reason endpoints."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -53,9 +56,9 @@ def _write_audit(
             selected_procedural_ids=audit.get("selected_procedural_ids", []),
             n_messages=n_messages,
         )
-    except Exception:
+    except Exception as exc:
         # Don't let an audit-log failure break a working recall.
-        pass
+        logger.warning("recall audit log failed: %s", exc)
 
 router = APIRouter(prefix="/graphs", tags=["retrieval"], dependencies=[Depends(require_api_key)])
 

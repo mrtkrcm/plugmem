@@ -47,6 +47,24 @@ def test_get_node_detail(client):
     assert data["node_type"] == "semantic"
 
 
+def test_get_node_detail_includes_new_semantic_siblings_without_reload(client):
+    _make_graph(client)
+    resp = client.post("/api/v1/graphs/test_graph/memories", json={
+        "mode": "structured",
+        "semantic": [
+            {"semantic_memory": "fact one", "tags": ["alpha"]},
+            {"semantic_memory": "fact two", "tags": ["beta"]},
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+
+    resp = client.get("/api/v1/graphs/test_graph/node/semantic/0")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["edges"]["bro_semantics"]) == 1
+    assert data["edges"]["bro_semantics"][0]["semantic_id"] == 1
+
+
 def test_get_node_detail_not_found(client):
     _make_graph(client)
     resp = client.get("/api/v1/graphs/test_graph/node/semantic/999")

@@ -7,6 +7,10 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from plugmem.clients.llm import LLMClient
+
+if TYPE_CHECKING:
+    from plugmem.prompts.registry import PromptRegistry
+from plugmem.inference._shared import render_messages, resolve
 from plugmem.prompts.retrieving import (
     GetModePrompt,
     GetNewSemanticPrompt,
@@ -14,28 +18,28 @@ from plugmem.prompts.retrieving import (
     GetPlanPrompt,
 )
 
-if TYPE_CHECKING:
-    from plugmem.prompts.registry import PromptRegistry
 
-
-def _render_messages(prompt_obj, variables: dict) -> List[Dict[str, str]]:
-    messages = prompt_obj.render(variables)
-    return [{"role": m.role, "content": m.content} for m in messages]
-
-
-def _resolve(name: str, fallback_cls: type, prompts: Optional[PromptRegistry], graph_id: Optional[str]):
-    if prompts is not None:
-        return prompts.get(name, graph_id=graph_id)
-    return fallback_cls()
+_ALLOWED_REL = {
+    "UPDATE_SAME_FACT",
+    "SAME_TOPIC_MERGE_WELL",
+    "WEAK_RELATED_STITCH_RISK",
+}
+_REQUIRED_KEYS = {
+    "merged_statement",
+    "relationship",
+    "deactivate_earlier",
+    "deactivate_later",
+    "simple_reasoning",
+}
 
 
 def get_plan(
     llm: LLMClient, goal: str, subgoal: str, state: str, observation: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> Tuple[str, List[str]]:
-    prompt_obj = _resolve("get_plan", GetPlanPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_plan", GetPlanPrompt, prompts, graph_id)
     variables = {"goal": goal, "subgoal": subgoal, "state": state, "observation": observation}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
 
     tags_pattern = r"\*\*Tags:\*\*\s*(.*)\n"
     tags_match = re.search(tags_pattern, response)
@@ -60,18 +64,6 @@ def get_new_semantic(
     llm: LLMClient, old_semantic_memory: str, new_semantic_memory: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    _ALLOWED_REL = {
-        "UPDATE_SAME_FACT",
-        "SAME_TOPIC_MERGE_WELL",
-        "WEAK_RELATED_STITCH_RISK",
-    }
-    _REQUIRED_KEYS = {
-        "merged_statement",
-        "relationship",
-        "deactivate_earlier",
-        "deactivate_later",
-        "simple_reasoning",
-    }
 
     def _extract_json_object(text: str) -> Dict[str, Any]:
         text = text.strip()
@@ -114,9 +106,9 @@ def get_new_semantic(
             "simple_reasoning": obj["simple_reasoning"],
         }
 
-    prompt_obj = _resolve("get_new_semantic", GetNewSemanticPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_new_semantic", GetNewSemanticPrompt, prompts, graph_id)
     variables = {"memory_earlier": old_semantic_memory, "memory_later": new_semantic_memory}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     return parse_merge_decision(response)
 
 
@@ -124,9 +116,9 @@ def get_new_subgoal(
     llm: LLMClient, old_subgoal: str, new_subgoal: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> str:
-    prompt_obj = _resolve("get_new_subgoal", GetNewSubgoalPrompt, prompts, graph_id)
+    prompt_obj = resolve("get_new_subgoal", GetNewSubgoalPrompt, prompts, graph_id)
     variables = {"goal_1": old_subgoal, "goal_2": new_subgoal}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     return response
 
 
@@ -134,9 +126,9 @@ def get_mode(
     llm: LLMClient, observation: str, task_type: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> str:
-    prompt_obj = _resolve("get_mode", GetModePrompt, prompts, graph_id)
+    prompt_obj = resolve("get_mode", GetModePrompt, prompts, graph_id)
     variables = {"observation": observation, "task_type": task_type}
-    response = llm.complete(messages=_render_messages(prompt_obj, variables))
+    response = llm.complete(messages=render_messages(prompt_obj, variables))
     pattern = r"### Memory Type\n(.*)"
     match = re.search(pattern, response)
     return match.group(1).strip() if match else "semantic_memory"

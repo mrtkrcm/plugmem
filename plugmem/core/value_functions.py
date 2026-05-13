@@ -1,13 +1,18 @@
-"""Concrete value function implementations — unchanged logic."""
+"""Concrete value function implementations."""
 from __future__ import annotations
 
 from plugmem.core.value_base import ValueBase
 
 
-class TagEqual(ValueBase):
-    def __init__(self, k: int = 1, value_threshold: float = 0.9):
-        self.value_threshold = value_threshold
+class RelevanceValueFunc(ValueBase):
+    """Value function that scores primarily on relevance, with all other
+    dimensions returning zero by default. Subclasses override ``k`` and
+    ``value_threshold`` only.
+    """
+
+    def __init__(self, k: int = 1, value_threshold: float = 0.0):
         self.k = k
+        self.value_threshold = value_threshold
 
     def compute_importance(self, Importance: float) -> float:
         return 0
@@ -25,169 +30,46 @@ class TagEqual(ValueBase):
         return 0
 
 
-class TagRelevant(ValueBase):
-    def __init__(self, k: int = 1, value_threshold: float = 0.8):
-        self.value_threshold = value_threshold
-        self.k = k
-
-    def compute_importance(self, Importance: float) -> float:
-        return 0
-
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class TagEqual(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=1, value_threshold=0.9)
 
 
-class SemanticEqual(ValueBase):
-    def __init__(self, k: int = 1, value_threshold: float = 0.9):
-        self.value_threshold = value_threshold
-        self.k = k
-
-    def compute_importance(self, Importance: float) -> float:
-        return 0
-
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class TagRelevant(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=1, value_threshold=0.8)
 
 
-class SemanticRelevant(ValueBase):
-    def __init__(self, k: int = 10, value_threshold: float = 0.0):
-        self.value_threshold = value_threshold
-        self.k = k
-
-    def compute_importance(self, Importance: float) -> float:
-        return 0
-
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class SemanticEqual(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=1, value_threshold=0.9)
 
 
-class SemanticRelevant4Episodic(ValueBase):
-    def __init__(self, k: int = 30, value_threshold: float = 0.0):
-        self.value_threshold = value_threshold
-        self.k = k
-
-    def compute_importance(self, Importance: float) -> float:
-        return 0
-
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class SemanticRelevant(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=10, value_threshold=0.0)
 
 
-class SubgoalEqual(ValueBase):
-    def __init__(self, k: int = 1, value_threshold: float = 0.8):
-        self.value_threshold = value_threshold
-        self.k = k
-
-    def compute_importance(self, Importance: float) -> float:
-        return 0
-
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class SemanticRelevant4Episodic(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=30, value_threshold=0.0)
 
 
-class SubgoalRelevant(ValueBase):
-    def __init__(self, k: int = 1, value_threshold: float = 0.1):
-        self.value_threshold = value_threshold
-        self.k = k
-
-    def compute_importance(self, Importance: float) -> float:
-        return 0
-
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class SubgoalEqual(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=1, value_threshold=0.8)
 
 
-class ProceduralEqual(ValueBase):
-    def __init__(self, k: int = 1, value_threshold: float = 0.8):
-        self.value_threshold = value_threshold
-        self.k = k
-
-    def compute_importance(self, Importance: float) -> float:
-        return 0
-
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class SubgoalRelevant(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=1, value_threshold=0.1)
 
 
-class ProceduralRelevant(ValueBase):
-    def __init__(self, k: int = 1, value_threshold: float = 0.1):
-        self.value_threshold = value_threshold
-        self.k = k
+class ProceduralEqual(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=1, value_threshold=0.8)
 
-    def compute_importance(self, Importance: float) -> float:
-        return 0
 
-    def compute_relevance(self, Relevance: float) -> float:
-        return Relevance
-
-    def compute_recency(self, Recency: float) -> float:
-        return 0
-
-    def compute_return(self, Return: float) -> float:
-        return 0
-
-    def compute_credibility(self, Credibility: float) -> float:
-        return 0
+class ProceduralRelevant(RelevanceValueFunc):
+    def __init__(self):
+        super().__init__(k=1, value_threshold=0.1)
