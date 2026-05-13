@@ -164,11 +164,13 @@ def build_chroma_storage(cfg: PlugMemConfig) -> ChromaStorage:
     )
 
 
-def build_sqlite_vec_storage(cfg: PlugMemConfig):
+def build_sqlite_vec_storage(cfg: PlugMemConfig, embedding_dim: int = 768):
     """Construct an experimental SqliteVecStorage from config.
 
     Import is lazy so the optional ``sqlite-vec`` dependency only matters
     when this backend is actually selected via ``STORAGE_BACKEND=sqlite_vec``.
+    ``embedding_dim`` defaults to 768 but callers should probe the active
+    embedder and pass the real dimension (e.g. 32 for local deterministic).
     """
     try:
         from plugmem.storage.sqlite_vec import SqliteVecStorage
@@ -180,16 +182,16 @@ def build_sqlite_vec_storage(cfg: PlugMemConfig):
 
     db_path = Path(cfg.sqlite_vec_path).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return SqliteVecStorage(str(db_path))
+    return SqliteVecStorage(str(db_path), embedding_dim=embedding_dim)
 
 
-def build_storage(cfg: PlugMemConfig) -> StorageBackend:
+def build_storage(cfg: PlugMemConfig, embedding_dim: int = 768) -> StorageBackend:
     """Dispatch on ``cfg.storage_backend`` — single entry point for the API layer."""
     backend = (cfg.storage_backend or "chroma").lower()
     if backend == "chroma":
         return build_chroma_storage(cfg)
     if backend == "sqlite_vec":
-        return build_sqlite_vec_storage(cfg)
+        return build_sqlite_vec_storage(cfg, embedding_dim=embedding_dim)
     raise ValueError(
         f"Unknown storage_backend {backend!r}. Expected 'chroma' or 'sqlite_vec'."
     )
@@ -199,8 +201,10 @@ def get_graph_manager(config: PlugMemConfig | None = None) -> GraphManager:
     global _graph_manager
     if _graph_manager is None:
         cfg = config or get_config()
-        storage = build_storage(cfg)
         embedder = get_embedder(cfg)
+        # Probe the embedder output dimension for sqlite_vec schema creation.
+        probe = embedder.embed("x")
+        storage = build_storage(cfg, embedding_dim=len(probe))
         llm = get_llm(cfg)
 
         _graph_manager = GraphManager(

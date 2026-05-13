@@ -32,12 +32,8 @@ logger = logging.getLogger(__name__)
 
 NODE_TYPES = ("semantic", "procedural", "tag", "subgoal", "episodic")
 
-_VEC_DIMS: dict = {
-    "semantic": 768,
-    "procedural": 768,
-    "tag": 768,
-    "subgoal": 768,
-}
+# Default vector dimension; overridden by SqliteVecStorage(embedding_dim=…).
+_DEFAULT_VEC_DIM = 768
 
 
 def _serialize(v: Any) -> bytes:
@@ -169,7 +165,7 @@ CREATE TABLE IF NOT EXISTS "{gid}_recall_audit" (
 """
 
 
-def _fmt(sql: str, gid: str, dim: int = 768) -> str:
+def _fmt(sql: str, gid: str, dim: int) -> str:
     return sql.replace("{gid}", gid).replace("{dim}", str(dim))
 
 
@@ -180,9 +176,10 @@ class SqliteVecStorage:
     plus 1 recall audit table.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, embedding_dim: int = _DEFAULT_VEC_DIM):
         self._lock = threading.Lock()
         self._db_path = str(db_path)
+        self._embedding_dim = embedding_dim
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         _ensure_vec_db(self._conn)
@@ -203,16 +200,17 @@ class SqliteVecStorage:
             return
         with self._lock:
             cur = self._conn.cursor()
+            dim = self._embedding_dim
             for sql in [_SCHEMA_SEMANTIC, _SCHEMA_SEMANTIC_VEC]:
-                cur.execute(_fmt(sql, graph_id))
+                cur.execute(_fmt(sql, graph_id, dim))
             for sql in [_SCHEMA_PROCEDURAL, _SCHEMA_PROCEDURAL_VEC]:
-                cur.execute(_fmt(sql, graph_id))
+                cur.execute(_fmt(sql, graph_id, dim))
             for sql in [_SCHEMA_TAG, _SCHEMA_TAG_VEC]:
-                cur.execute(_fmt(sql, graph_id))
+                cur.execute(_fmt(sql, graph_id, dim))
             for sql in [_SCHEMA_SUBGOAL, _SCHEMA_SUBGOAL_VEC]:
-                cur.execute(_fmt(sql, graph_id))
-            cur.execute(_fmt(_SCHEMA_EPISODIC, graph_id))
-            cur.execute(_fmt(_SCHEMA_RECALL, graph_id))
+                cur.execute(_fmt(sql, graph_id, dim))
+            cur.execute(_fmt(_SCHEMA_EPISODIC, graph_id, dim))
+            cur.execute(_fmt(_SCHEMA_RECALL, graph_id, dim))
             self._conn.commit()
             self._initialized.add(graph_id)
 
