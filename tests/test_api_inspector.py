@@ -32,6 +32,87 @@ def test_search_nodes_with_data(client):
     assert data["nodes"][0]["semantic_memory"] == "test fact"
 
 
+def test_nodes_provenance_filter_scopes_results(client):
+    """/nodes language=python should match python-provenanced semantics only."""
+    _make_graph(client)
+    client.post("/api/v1/graphs/test_graph/memories", json={
+        "mode": "structured",
+        "semantic": [{
+            "semantic_memory": "use uv, not pip",
+            "tags": ["python"],
+            "source": "explicit",
+            "confidence": 0.9,
+            "provenance": {"language": "python"},
+        }],
+    })
+    client.post("/api/v1/graphs/test_graph/memories", json={
+        "mode": "structured",
+        "semantic": [{
+            "semantic_memory": "use swift-format",
+            "tags": ["swift"],
+            "source": "explicit",
+            "confidence": 0.9,
+            "provenance": {"language": "swift"},
+        }],
+    })
+
+    py = client.get(
+        "/api/v1/graphs/test_graph/nodes",
+        params={"node_type": "semantic", "language": "python"},
+    ).json()
+    assert py["count"] == 1
+    assert py["nodes"][0]["semantic_memory"] == "use uv, not pip"
+
+    sw = client.get(
+        "/api/v1/graphs/test_graph/nodes",
+        params={"node_type": "semantic", "language": "swift"},
+    ).json()
+    assert sw["count"] == 1
+    assert sw["nodes"][0]["semantic_memory"] == "use swift-format"
+
+    rust = client.get(
+        "/api/v1/graphs/test_graph/nodes",
+        params={"node_type": "semantic", "language": "rust"},
+    ).json()
+    assert rust["count"] == 0
+
+
+def test_nodes_source_and_confidence_filter(client):
+    _make_graph(client)
+    client.post("/api/v1/graphs/test_graph/memories", json={
+        "mode": "structured",
+        "semantic": [{
+            "semantic_memory": "explicit high-conf",
+            "tags": ["x"],
+            "source": "explicit",
+            "confidence": 0.9,
+        }],
+    })
+    client.post("/api/v1/graphs/test_graph/memories", json={
+        "mode": "structured",
+        "semantic": [{
+            "semantic_memory": "inferred low-conf",
+            "tags": ["x"],
+            "source": "failure_delta",
+            "confidence": 0.3,
+        }],
+    })
+
+    explicit_only = client.get(
+        "/api/v1/graphs/test_graph/nodes",
+        params=[("node_type", "semantic"), ("source_in", "explicit")],
+    ).json()
+    assert explicit_only["count"] == 1
+    assert explicit_only["nodes"][0]["source"] == "explicit"
+
+    high_conf = client.get(
+        "/api/v1/graphs/test_graph/nodes",
+        params={"node_type": "semantic", "min_confidence": 0.5},
+    ).json()
+    assert high_conf["count"] == 1
+    assert high_conf["nodes"][0]["confidence"] >= 0.5
+
+
 def test_search_nodes_invalid_type(client):
     _make_graph(client)
     resp = client.get("/api/v1/graphs/test_graph/nodes", params={"node_type": "invalid"})

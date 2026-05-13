@@ -1,5 +1,18 @@
 # PlugMem — Agent Context
 
+## Scope (what PlugMem is not)
+
+PlugMem stores **agent experience** (corrections, preferences, procedures), scoped by provenance. It is **not a code index**.
+
+For code-structure questions ("what calls X?", "where is Y defined?", impact radius, call graphs) the companion is **CocoIndex-code** (`~/code/coco/cocoindex-code/`, MCP tools: `codebase_search`, `codebase_symbol`, `codebase_impact`, `codebase_graph_*`, `codebase_context_*`, `codebase_workflow`). The two MCP servers co-deploy — route code-structure to cocoindex-code, experience/correction to PlugMem.
+
+Concrete API contract:
+- **Agent list surface** = `GET /graphs/{gid}/nodes` (and `plugmem coding list`). Filters: `language`, `repo`, `source_in`, `min_confidence`. Metadata only, never content.
+- **Agent recall surfaces** = `POST /retrieve`, `POST /reason`. Accept `provenance_filters: {key: [values]}` (keys: repo, branch, commit, language, filepath, package_manager, tool_name, tool_version, os, component).
+- **Inspector-UI-only** = `GET /graphs/{gid}/search` (content substring). Do not call from agents — the OpenAPI summary already warns.
+
+When extending coding-agent surfaces: provenance/source/confidence are the right filter axes; memory content text is not.
+
 ## Architecture
 
 ```
@@ -15,6 +28,33 @@ plugmem/
   graph_manager.py
 tests/            pytest suite
 ```
+
+## Public surfaces
+
+PlugMem exposes three callers' contracts. Don't conflate them.
+
+1. **`plugmem.core` library** — pure-function primitives (`extract_coding_memories`, value functions, `compute_source_boost`, `passes_metadata_filter`, `PROVENANCE_FIELDS`). No daemon needed. Use this when embedding PlugMem inside another runtime. Re-exports live in `plugmem/core/__init__.py`.
+2. **HTTP API + daemon** — FastAPI service for cross-session persistence and multi-agent coordination. Routes documented under `plugmem/api/routes/`.
+3. **MCP server + CLI** — agent integrations. Thin layers over (2). Do not duplicate logic that belongs in (1) or (2).
+
+When adding a new capability, ask which layer owns it. Most new logic should land in `plugmem.core` and be *exposed* by (2) and (3).
+
+## Storage backends
+
+Two backends behind a shared duck-typed interface (alias `StorageBackend` in `plugmem/storage/__init__.py`):
+
+- **`ChromaStorage`** — production default. Wired through `api/dependencies.py::build_chroma_storage`.
+- **`SqliteVecStorage`** — **experimental**. Implementation lives at `plugmem/storage/sqlite_vec.py`; install with `pip install -e ".[sqlite-vec]"`. Selectable via `STORAGE_BACKEND=sqlite_vec` or through the init wizard. Stay on `chroma` for production until the experimental gates close.
+
+SqliteVecStorage status (selecting via `STORAGE_BACKEND=sqlite_vec` / `cfg.storage_backend = "sqlite_vec"`):
+
+- ✅ `build_sqlite_vec_storage` + `build_storage` selector in `api/dependencies.py`.
+- ✅ `storage_backend` field on `PlugMemConfig` + CLI config; env var `STORAGE_BACKEND`.
+- ✅ Smoke tests in `tests/test_storage_sqlite_vec.py` cover round-trip, vec-table upsert on `update_semantic`, method-signature parity vs `ChromaStorage`, DI dispatch.
+- ✅ Init wizard step in `plugmem init` — user can select backend at setup.
+- ⚠️ Still missing: full retrieval/promotion integration tests on this backend; large-graph benchmarks. Stay on `chroma` for production until those land.
+
+vec0 quirk: virtual tables do **not** accept `INSERT OR REPLACE` on the rowid PK. Use `DELETE WHERE id=? ; INSERT INTO …` to upsert (see `update_semantic` and friends).
 
 ## Key Principles
 

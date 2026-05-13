@@ -6,8 +6,6 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-import chromadb
-
 from plugmem.clients.embedding import (
     EmbeddingClient,
     HTTPEmbeddingClient,
@@ -19,6 +17,7 @@ from plugmem.clients.llm_router import LLMRouter
 from plugmem.config import PlugMemConfig
 from plugmem.graph_manager import GraphManager
 from plugmem.storage.chroma import ChromaStorage
+from plugmem.storage import StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +32,12 @@ def get_config() -> PlugMemConfig:
         embedding_base_url=os.getenv("EMBEDDING_BASE_URL", ""),
         embedding_model=os.getenv("EMBEDDING_MODEL", "nvidia/NV-Embed-v2"),
         embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
+        storage_backend=os.getenv("STORAGE_BACKEND", "chroma"),
         chroma_mode=os.getenv("CHROMA_MODE", "persistent"),
         chroma_path=os.getenv("CHROMA_PATH", "./data/chroma"),
         chroma_host=os.getenv("CHROMA_HOST", "localhost"),
         chroma_port=int(os.getenv("CHROMA_PORT", "8000")),
+        sqlite_vec_path=os.getenv("SQLITE_VEC_PATH", "./data/plugmem.db"),
         api_key=os.getenv("PLUGMEM_API_KEY"),
         max_retries=int(os.getenv("LLM_MAX_RETRIES", "5")),
         llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.0")),
@@ -145,6 +146,8 @@ def get_embedder(config: PlugMemConfig | None = None) -> EmbeddingClient:
 
 def build_chroma_storage(cfg: PlugMemConfig) -> ChromaStorage:
     """Construct a ChromaStorage from config — the single place that builds Chroma clients."""
+    import chromadb
+
     if cfg.chroma_mode == "http":
         chroma_client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
     elif cfg.chroma_mode == "ephemeral":
@@ -161,11 +164,42 @@ def build_chroma_storage(cfg: PlugMemConfig) -> ChromaStorage:
     )
 
 
+def build_sqlite_vec_storage(cfg: PlugMemConfig):
+    """Construct an experimental SqliteVecStorage from config.
+
+    Import is lazy so the optional ``sqlite-vec`` dependency only matters
+    when this backend is actually selected via ``STORAGE_BACKEND=sqlite_vec``.
+    """
+    try:
+        from plugmem.storage.sqlite_vec import SqliteVecStorage
+    except ImportError as exc:  # pragma: no cover - import guard
+        raise RuntimeError(
+            "STORAGE_BACKEND=sqlite_vec requires the optional sqlite-vec "
+            'dependency. Install with `pip install -e ".[sqlite-vec]"`.'
+        ) from exc
+
+    db_path = Path(cfg.sqlite_vec_path).expanduser()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return SqliteVecStorage(str(db_path))
+
+
+def build_storage(cfg: PlugMemConfig) -> StorageBackend:
+    """Dispatch on ``cfg.storage_backend`` — single entry point for the API layer."""
+    backend = (cfg.storage_backend or "chroma").lower()
+    if backend == "chroma":
+        return build_chroma_storage(cfg)
+    if backend == "sqlite_vec":
+        return build_sqlite_vec_storage(cfg)
+    raise ValueError(
+        f"Unknown storage_backend {backend!r}. Expected 'chroma' or 'sqlite_vec'."
+    )
+
+
 def get_graph_manager(config: PlugMemConfig | None = None) -> GraphManager:
     global _graph_manager
     if _graph_manager is None:
         cfg = config or get_config()
-        storage = build_chroma_storage(cfg)
+        storage = build_storage(cfg)
         embedder = get_embedder(cfg)
         llm = get_llm(cfg)
 

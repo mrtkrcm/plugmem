@@ -12,9 +12,6 @@ from plugmem.cli.daemon import HEALTH_PATH
 from plugmem.cli.wizard.ui import console, error
 
 
-HEALTH_FLAGS = ("llm_available", "embedding_available", "chroma_available")
-
-
 def health_cmd(
     config_path: Optional[Path] = typer.Option(
         None, "--config", "-c", help="Path to config file."
@@ -40,17 +37,21 @@ def health_cmd(
         error("{} returned non-JSON".format(url))
         raise typer.Exit(code=2)
 
+    backend = data.get("storage_backend", "chroma")
+    flags = ["llm_available", "embedding_available", "chroma_available"]
+
     overall_ok = True
-    for flag in HEALTH_FLAGS:
+    for flag in flags:
         ok = data.get(flag, False)
+        label = flag if flag != "chroma_available" else f"storage_available ({backend})"
         mark = "[green]✓[/green]" if ok else "[red]✗[/red]"
-        console.print("  {} {}".format(mark, flag))
+        console.print("  {} {}".format(mark, label))
         if not ok:
             overall_ok = False
 
     version = data.get("version", "?")
-    status = data.get("status", "?")
-    console.print("\nstatus: {}, version: {}".format(status, version))
+    status_val = data.get("status", "?")
+    console.print("\nstatus: {}, version: {}".format(status_val, version))
 
     if not overall_ok:
         raise typer.Exit(code=1)

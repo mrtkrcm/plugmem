@@ -5,13 +5,16 @@ Manages multiple MemoryGraph instances, each identified by a graph_id.
 from __future__ import annotations
 
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from plugmem.clients.embedding import EmbeddingClient
 from plugmem.clients.llm import LLMClient
 from plugmem.clients.llm_router import LLMRouter
 from plugmem.core.memory_graph import MemoryGraph
-from plugmem.storage.chroma import ChromaStorage
+from plugmem.storage import StorageBackend
+
+if TYPE_CHECKING:
+    from plugmem.storage.chroma import ChromaStorage
 
 
 class GraphManager:
@@ -19,7 +22,7 @@ class GraphManager:
 
     def __init__(
         self,
-        storage: ChromaStorage,
+        storage: StorageBackend,
         llm: LLMClient,
         embedder: EmbeddingClient,
     ):
@@ -29,8 +32,8 @@ class GraphManager:
         self._graphs: Dict[str, MemoryGraph] = {}
 
     @property
-    def storage(self) -> ChromaStorage:
-        """Public accessor for the underlying ChromaStorage."""
+    def storage(self) -> StorageBackend:
+        """Public accessor for the underlying storage backend."""
         return self._storage
 
     @property

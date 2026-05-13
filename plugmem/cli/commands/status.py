@@ -32,10 +32,12 @@ def status_cmd(
 
     health = state.get("health")
     if state["running"] and health:
+        backend = health.get("storage_backend", "chroma")
         flags = ["llm_available", "embedding_available", "chroma_available"]
         for f in flags:
             ok = health.get(f, False)
+            label = f if f != "chroma_available" else f"storage_available ({backend})"
             mark = "[green]✓[/green]" if ok else "[red]✗[/red]"
-            console.print("  {} {}".format(mark, f))
+            console.print("  {} {}".format(mark, label))
     elif state["running"]:
         console.print("  [yellow]![/yellow] {} did not respond".format(HEALTH_PATH))

@@ -69,9 +69,10 @@ curl -s http://localhost:8080/health | jq
 ```
 
 You want `status: "ok"` and all three of `llm_available`,
-`embedding_available`, `chroma_available` set to `true`. If any is
-`false`, fix the corresponding env var before continuing — the plugin will
-appear to work but memory insertion and retrieval will fail.
+`embedding_available`, `chroma_available` set to `true`
+(`storage_backend` says which backend is in use). If any is `false`, fix
+the corresponding env var before continuing — the plugin will appear to
+work but memory insertion and retrieval will fail.
 
 ## 2. Create your first graph
 

@@ -52,7 +52,7 @@ def run_wizard(config_path: Optional[Path] = None, *, force: bool = False) -> in
         retry = prompt_choice("What now?", choices=["save anyway", "abort"], default="abort")
         if retry == "abort":
             return 1
-        warn("Saving config despite probe failure -- fix the issue and re-run `plugmem doctor`.")
+        warn("Saving config despite probe failure -- fix the issue, edit config, and `plugmem start` manually to verify.")
     else:
         success(msg)
 

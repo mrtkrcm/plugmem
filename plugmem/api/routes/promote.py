@@ -173,8 +173,10 @@ async def promote(graph_id: str, body: PromoteRequest) -> PromoteResponse:
 
     # Silent-drop tracking: any input candidate that was neither rejected nor
     # produced a memory should be reported.  Since extracted memories do not
-    # carry a candidate index we use a heuristic: if a candidate's *kind*
-    # appears as the source of at least one memory, consider it covered.
+    # carry a candidate index, we approximate: if a candidate's *kind* appears
+    # as the source of at least one extracted memory, consider it covered.
+    # Limitation: two candidates with the same kind where one produces a memory
+    # and the other does not will not catch the silent drop.
     produced_sources: set = {m.source for m in filtered_memories}
     for i, c in enumerate(body.candidates):
         if i not in rejected_indices and c.kind not in produced_sources:

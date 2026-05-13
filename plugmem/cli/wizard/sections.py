@@ -129,11 +129,27 @@ def run_service_section(cfg: PlugmemConfig) -> bool:
     port_str = prompt_text("port", default=str(suggested_port))
     cfg.service.port = int(port_str)
 
-    data_dir_default = cfg.service.data_dir or str(default_data_dir())
-    data_dir = prompt_text("data_dir (chroma persistence)", default=data_dir_default)
-    if not _ensure_writable_dir(Path(data_dir).expanduser()):
-        warn("Could not create or write to {}; using anyway, may fail at start.".format(data_dir))
-    cfg.service.data_dir = data_dir
+    # Storage backend selection
+    backend_choice = prompt_choice(
+        "storage backend",
+        choices=["chroma", "sqlite_vec"],
+        default=cfg.service.storage_backend or "chroma",
+    )
+    cfg.service.storage_backend = backend_choice
+
+    if backend_choice == "sqlite_vec":
+        sqlite_default = cfg.service.sqlite_vec_path or str(default_data_dir().parent / "plugmem.db")
+        sqlite_path = prompt_text("sqlite_vec path", default=sqlite_default)
+        sqlite_dir = Path(sqlite_path).expanduser().parent
+        if not _ensure_writable_dir(sqlite_dir):
+            warn("Could not create or write to {}; using anyway, may fail at start.".format(sqlite_dir))
+        cfg.service.sqlite_vec_path = sqlite_path
+    else:
+        data_dir_default = cfg.service.data_dir or str(default_data_dir())
+        data_dir = prompt_text("chroma data_dir", default=data_dir_default)
+        if not _ensure_writable_dir(Path(data_dir).expanduser()):
+            warn("Could not create or write to {}; using anyway, may fail at start.".format(data_dir))
+        cfg.service.data_dir = data_dir
 
     if not cfg.service.api_key:
         cfg.service.api_key = secrets.token_hex(16)

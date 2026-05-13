@@ -33,19 +33,19 @@ async def health_check() -> HealthResponse:
     except Exception:
         logger.debug("Embedding health check failed", exc_info=True)
 
-    chroma_ok = False
+    storage_ok = False
     try:
         gm = get_graph_manager(cfg)
-        # Verify ChromaDB connection by listing graphs
         gm.list_graphs()
-        chroma_ok = True
+        storage_ok = True
     except Exception:
-        logger.debug("ChromaDB health check failed", exc_info=True)
+        logger.debug("Storage health check failed (backend=%s)", cfg.storage_backend, exc_info=True)
 
     return HealthResponse(
-        status="ok" if (llm_ok and embedding_ok and chroma_ok) else "degraded",
+        status="ok" if (llm_ok and embedding_ok and storage_ok) else "degraded",
         version=__version__,
         llm_available=llm_ok,
         embedding_available=embedding_ok,
-        chroma_available=chroma_ok,
+        chroma_available=storage_ok,
+        storage_backend=cfg.storage_backend,
     )

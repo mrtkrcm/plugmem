@@ -19,11 +19,18 @@ class PlugMemConfig:
     embedding_model: str = "nvidia/NV-Embed-v2"
     embedding_api_key: str = ""  # for auth-gated OpenAI-compatible endpoints
 
+    # Storage backend selector. ``chroma`` is the production default.
+    # ``sqlite_vec`` is experimental — see CLAUDE.md → "Storage backends".
+    storage_backend: str = "chroma"  # "chroma" | "sqlite_vec"
+
     # ChromaDB
     chroma_mode: str = "persistent"  # "persistent" | "http" | "ephemeral"
     chroma_path: str = "./data/chroma"  # for persistent mode
     chroma_host: str = "localhost"  # for http mode
     chroma_port: int = 8000  # for http mode
+
+    # SqliteVec (experimental)
+    sqlite_vec_path: str = "./data/plugmem.db"
 
     # Service
     api_key: Optional[str] = None  # for service auth

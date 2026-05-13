@@ -46,6 +46,9 @@ from plugmem.prompts.reasoning import (
 )
 from plugmem.prompts.registry import PromptRegistry
 from plugmem.storage.chroma import ChromaStorage, _deserialize_list
+from plugmem.storage.sqlite_vec import SqliteVecStorage
+
+StorageBackend = ChromaStorage | SqliteVecStorage
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +84,7 @@ class MemoryGraph:
     def __init__(
         self,
         graph_id: str,
-        storage: ChromaStorage,
+        storage: StorageBackend,
         llm: LLMClient,
         embedder: EmbeddingClient,
         prompts: Optional[PromptRegistry] = None,

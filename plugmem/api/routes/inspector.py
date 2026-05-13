@@ -173,10 +173,25 @@ def _lookup_for_type(graph, node_type: str):
 
 # ------------------------------------------------------------------ #
 # /search — substring filter on the node text field
+#
+# INSPECTOR UI ONLY. This endpoint matches against memory *content*, which
+# is the wrong shape for an agent retrieval surface. Agents and the CLI
+# should use ``/retrieve`` + ``provenance_filters`` for experience recall,
+# or ``/nodes`` for metadata-filtered browsing. Kept for the human-facing
+# Inspector UI's "search box" and not part of the agent contract.
 # ------------------------------------------------------------------ #
 
 
-@router.get("/{graph_id}/search", response_model=SearchResponse)
+@router.get(
+    "/{graph_id}/search",
+    response_model=SearchResponse,
+    summary="Inspector-only content substring search (humans, not agents)",
+    description=(
+        "Inspector UI content-search box. Substring-matches memory text. "
+        "**Not for agent use** — agents should call /retrieve with "
+        "provenance_filters, or /nodes for metadata-filtered listing."
+    ),
+)
 async def search_nodes(
     graph_id: str,
     q: str = "",

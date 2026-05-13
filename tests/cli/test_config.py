@@ -49,3 +49,32 @@ def test_save_and_load_config(tmp_path):
     assert loaded.service.port == 9090
     assert loaded.service.api_key == "saved-key"
     assert loaded.llm.model == "gpt-4"
+
+
+def test_storage_backend_default():
+    cfg = PlugmemConfig()
+    assert cfg.service.storage_backend == "chroma"
+    assert cfg.service.sqlite_vec_path == ""
+    env = config_to_env(cfg)
+    assert "STORAGE_BACKEND" not in env
+    assert "SQLITE_VEC_PATH" not in env
+
+
+def test_storage_backend_sqlite_vec_config_to_env():
+    cfg = PlugmemConfig(
+        service={"storage_backend": "sqlite_vec", "sqlite_vec_path": "/tmp/test.db"},
+    )
+    env = config_to_env(cfg)
+    assert env["STORAGE_BACKEND"] == "sqlite_vec"
+    assert env["SQLITE_VEC_PATH"] == "/tmp/test.db"
+
+
+def test_storage_backend_round_trip(tmp_path):
+    cfg = PlugmemConfig(
+        service={"storage_backend": "sqlite_vec", "sqlite_vec_path": "/tmp/pm.db"},
+    )
+    p = tmp_path / "config.toml"
+    save_config(cfg, p)
+    loaded = load_config(p)
+    assert loaded.service.storage_backend == "sqlite_vec"
+    assert loaded.service.sqlite_vec_path == "/tmp/pm.db"

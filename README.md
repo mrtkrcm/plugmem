@@ -50,6 +50,24 @@ For more details, please see the full paper: [https://arxiv.org/abs/2603.03296](
 
 - **[2026-04]** 🎉 **PlugMem accepted to ICML 2026!**
 
+## Scope — and what PlugMem is *not*
+
+PlugMem stores **agent experience**: corrections, preferences, procedures, debugging recipes — scoped by provenance (repo, branch, language, …). It is **not a code index**.
+
+|                | PlugMem                                          | [CocoIndex-code](https://github.com/cocoindex-io/cocoindex-code) |
+| -------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
+| Memory type    | Episodic + semantic (experience-based)           | Epistemic (knowledge about code)                                 |
+| Source         | Agent interactions (corrections, failures)       | The codebase (git, AST)                                          |
+| Stores         | Corrections, procedures, preferences             | Symbols, call graphs, chunks                                     |
+| Answers        | *"How did we fix this last time?"*               | *"What calls X? Where is Y defined?"*                            |
+| Query surface  | `/retrieve`, `/reason`, `plugmem coding recall`  | `codebase_search`, `codebase_symbol`, `codebase_impact`, …       |
+
+They are orthogonal and designed to **co-deploy**: register both MCP servers in your agent and questions flow naturally — code-structure to CocoIndex-code, experience/correction to PlugMem. CocoIndex-code feeds context *to* the agent; PlugMem stores context *from* the agent's interactions.
+
+Provenance fields on PlugMem memories (`repo`, `language`, `filepath`, …) are **scoping metadata** for experience recall — they are not a code-browse facet. The agent-facing list surface is `GET /graphs/{gid}/nodes` (and `plugmem coding list`), filtered by provenance / source / confidence. `/search` is Inspector-UI-only.
+
+See [Co-deploying with CocoIndex-code](#co-deploying-with-cocoindex-code) below for a one-file MCP setup.
+
 ## Features
 ### Plug-in
 - **Enhance your agent with 6 lines of code**
@@ -97,7 +115,8 @@ mg.retrieve_and_reason(...)
 
 ```bash
 uv sync
-uv pip install -e ".[dev]"   # includes pytest, mypy
+uv pip install -e ".[dev]"          # includes pytest, mypy
+uv pip install -e ".[sqlite-vec]"   # optional: experimental sqlite-vec storage backend
 ```
 
 For a containerized server deployment, see
@@ -179,6 +198,32 @@ Use `/memories/batch` when you are ingesting many structured items at once.
 It is structured-mode only and is much more efficient than issuing one HTTP
 request per memory item.
 
+### Library mode (no daemon)
+
+If you own your own loop and don't need the HTTP service, the scoring + extraction primitives are importable directly. No FastAPI, no daemon, no CLI.
+
+```python
+from plugmem.core import (
+    extract_coding_memories,          # LLM-driven structuring
+    SemanticRelevant, ProceduralRelevant,
+    compute_source_boost,             # source × confidence ranker
+    passes_metadata_filter,           # provenance/source/confidence filter
+    PROVENANCE_FIELDS,
+)
+
+# Use the pure extractor on a window with your own LLMClient:
+memories, rejected = extract_coding_memories(llm, candidates=[...])
+
+# Use the value functions to rank candidates from any vector store:
+ranker = SemanticRelevant()
+score = ranker.evaluate(
+    Relevance=cosine_similarity,
+    Source="correction", Confidence=0.9,   # boost adds 0.225
+)
+```
+
+This is the right surface when you're embedding PlugMem inside another system (e.g. an agent runtime that already manages storage). The daemon + HTTP API is the right surface when you want cross-session persistence and a stable contract for multiple agents.
+
 ### Claude Code Quick Start
 
 Configure the MCP server in `~/.claude/settings.json`:
@@ -215,6 +260,49 @@ Claude: *calls plugmem_remember*
 ```
 
 The graph is auto-created on first tool use. No manual graph setup needed.
+
+### Co-deploying with CocoIndex-code
+
+PlugMem and [CocoIndex-code](https://github.com/cocoindex-io/cocoindex-code) cover the two halves of agent context: **experience** and **code structure**. Register both in one MCP config so the agent picks the right surface automatically.
+
+```json
+{
+  "mcpServers": {
+    "plugmem": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/PlugMem/claude-code-plugmem-plugin", "server.py"],
+      "env": {
+        "PLUGMEM_BASE_URL": "http://127.0.0.1:8080",
+        "PLUGMEM_API_KEY": "dev-key-change-me",
+        "PLUGMEM_DEFAULT_GRAPH": "coding-agent"
+      }
+    },
+    "cocoindex-code": {
+      "command": "ccc",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Setup steps (one time, ~2 min):
+
+```bash
+# 1. PlugMem (experience memory)
+uv pip install -e ".[dev]"      # in this repo
+plugmem init                    # interactive wizard
+plugmem start                   # daemon on :8080
+
+# 2. CocoIndex-code (code index) — see https://github.com/cocoindex-io/cocoindex-code
+uv tool install 'cocoindex-code[full]'
+ccc setup                       # bootstraps the local code index
+
+# 3. Restart Claude Code so it loads both MCP servers
+```
+
+Rule of thumb for the agent:
+- *"How did we handle / fix / configure X before?"* → PlugMem (`plugmem_recall`, `plugmem_remember`).
+- *"What calls X? Where is Y defined? What does this change break?"* → CocoIndex-code (`codebase_search`, `codebase_impact`, `codebase_symbol`).
 
 ### Remote Deployment
 
@@ -320,7 +408,7 @@ Commands:
   status    Show daemon status, PID, port, and last health probe.
   logs      Print or tail the daemon log.
   health    One-shot health check against the running service.
-  coding    Coding-agent memory commands (scaffold, promote).
+  coding    Coding-agent memory commands (scaffold, promote, recall, list).
 ```
 
 The CLI uses XDG paths for config (`~/.config/plugmem/config.toml`), state
@@ -373,9 +461,12 @@ plugmem coding promote --kind correction --window "use ruff" --source-filter cor
 plugmem coding recall "how to install deps" --language python
 # → LLM-synthesized reasoning grounded in Python-relevant memories
 
-# 8. List stored nodes
+# 8. Browse stored nodes (experience browser — metadata filters only)
 plugmem coding list --type semantic --language python
-# → Lists all semantic nodes with python provenance
+plugmem coding list --type semantic --source explicit --min-confidence 0.7
+plugmem coding list --type procedural --repo org/repo
+# → Filters are metadata-only (provenance, source, confidence). For
+#   content-aware retrieval, use `plugmem coding recall` instead.
 ```
 
 ## Deployment Files

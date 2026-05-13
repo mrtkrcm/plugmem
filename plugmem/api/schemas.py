@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # Why a memory was promoted into the graph. None = legacy / trajectory-derived
@@ -21,6 +21,23 @@ MemorySource = Literal[
 CodingProvenance = Optional[Dict[str, Any]]
 # Keys: repo, branch, commit, language, filepath, package_manager,
 #       tool_name, tool_version, os, component
+
+PROVENANCE_FILTER_KEYS = frozenset({
+    "repo", "branch", "commit", "language", "filepath",
+    "package_manager", "tool_name", "tool_version", "os", "component",
+})
+
+
+def _validate_provenance_filters(v: Any) -> Any:
+    if v is None:
+        return v
+    for key in v:
+        if key not in PROVENANCE_FILTER_KEYS:
+            raise ValueError(
+                f"Unknown provenance filter key: '{key}'. "
+                f"Allowed: {sorted(PROVENANCE_FILTER_KEYS)}"
+            )
+    return v
 
 
 # ------------------------------------------------------------------ #
@@ -168,6 +185,8 @@ class RetrieveRequest(BaseModel):
         description="If set, the recall is logged against this session id.",
     )
 
+    _validate_prov_filters = field_validator("provenance_filters")(_validate_provenance_filters)
+
 
 class RetrieveResponse(BaseModel):
     mode: str
@@ -198,6 +217,8 @@ class ReasonRequest(BaseModel):
         None,
         description="If set, the reasoning recall is logged against this session id.",
     )
+
+    _validate_prov_filters = field_validator("provenance_filters")(_validate_provenance_filters)
 
 
 class ReasonResponse(BaseModel):
@@ -367,6 +388,8 @@ class RecallTraceRequest(BaseModel):
         description="If set, the trace is logged to the recall audit under this session id.",
     )
 
+    _validate_prov_filters = field_validator("provenance_filters")(_validate_provenance_filters)
+
 
 class RecallTraceResponse(BaseModel):
     mode: str
@@ -466,3 +489,4 @@ class HealthResponse(BaseModel):
     llm_available: bool
     embedding_available: bool
     chroma_available: bool
+    storage_backend: str = "chroma"

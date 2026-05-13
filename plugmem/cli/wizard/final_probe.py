@@ -47,10 +47,15 @@ def _poll_health(cfg: PlugmemConfig, *, timeout: float, proc: subprocess.Popen) 
             resp = requests.get(url, timeout=2.0)
             if resp.status_code == 200:
                 data = resp.json()
+                backend = data.get("storage_backend", "chroma")
+                expected_keys = ("llm_available", "embedding_available")
                 missing = [
-                    k for k in ("llm_available", "embedding_available", "chroma_available")
+                    k for k in expected_keys
                     if not data.get(k, False)
                 ]
+                storage_key = "chroma_available"
+                if not data.get(storage_key, False):
+                    missing.append(f"{storage_key} ({backend} backend)")
                 if missing:
                     return False, "Service responded but the following are not available: " + ", ".join(missing)
                 return True, "All checks passed."

@@ -219,8 +219,8 @@ class PlugMemMCPServer:
                         },
                         "source": {
                             "type": "string",
-                            "description": "Where this memory came from: explicit, correction, failure_delta",
-                            "enum": ["explicit", "correction", "failure_delta"],
+                            "description": "Where this memory came from",
+                            "enum": ["explicit", "correction", "failure_delta", "merged", "repeated_lookup"],
                             "default": "explicit",
                         },
                         "confidence": {
@@ -316,9 +316,10 @@ class PlugMemMCPServer:
             {
                 "name": "plugmem_promote",
                 "description": (
-                    "Extract durable memory nodes from a coding session signal and store them. "
-                    "Use this when you notice a pattern worth remembering: a user correction, "
-                    "a failure-then-success trace, or a repeated lookup. "
+                    "Extract durable memory nodes from coding signals and store them. "
+                    "Accepts one or more candidates (each with kind + window). "
+                    "For a single candidate, use the kind+window shorthand. "
+                    "For multiple, use the candidates array. "
                     "Returns inserted node IDs and any rejected candidates with reasons."
                 ),
                 "inputSchema": {
@@ -330,12 +331,24 @@ class PlugMemMCPServer:
                         },
                         "kind": {
                             "type": "string",
-                            "description": "Type of signal",
+                            "description": "Type of signal (shorthand for single candidate)",
                             "enum": ["correction", "failure_delta", "explicit", "repeated_lookup"],
                         },
                         "window": {
                             "type": "string",
-                            "description": "Text context describing the signal",
+                            "description": "Text context (shorthand for single candidate)",
+                        },
+                        "candidates": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"type": "string"},
+                                    "window": {"type": "string"},
+                                },
+                                "required": ["kind", "window"],
+                            },
+                            "description": "Multiple candidates (use instead of kind+window)",
                         },
                         "source_in": {
                             "type": "array",
@@ -351,7 +364,6 @@ class PlugMemMCPServer:
                             "description": "Minimum confidence threshold (0.0-1.0)",
                         },
                     },
-                    "required": ["kind", "window"],
                 },
             },
         ]
@@ -393,7 +405,7 @@ class PlugMemMCPServer:
 
     def _build_provenance(self, args: Dict[str, Any]) -> Dict[str, str]:
         prov: Dict[str, str] = {}
-        for k in ("repo", "branch", "language", "filepath", "package_manager", "tool_name"):
+        for k in ("repo", "branch", "commit", "language", "filepath", "package_manager", "tool_name", "tool_version", "os", "component"):
             v = args.get(k)
             if v:
                 prov[k] = str(v)
@@ -514,12 +526,16 @@ class PlugMemMCPServer:
     def _tool_promote(self, args: Dict[str, Any]) -> str:
         graph_id = self._resolve_graph(args)
         self._ensure_graph(graph_id)
-        kind = args.get("kind", "correction")
-        window = args.get("window", "")
-        if not window:
-            return "Provide a `window` describing the signal to promote."
 
-        candidates = [{"kind": kind, "window": window}]
+        # Build candidates from either the array form or kind+window shorthand
+        candidates = args.get("candidates")
+        if candidates is None:
+            kind = args.get("kind", "correction")
+            window = args.get("window", "")
+            if not window:
+                return "Provide `window` (single candidate) or `candidates` array."
+            candidates = [{"kind": kind, "window": window}]
+
         filters: Dict[str, Any] = {}
         sf = args.get("source_filter") or args.get("source_in")
         if sf:

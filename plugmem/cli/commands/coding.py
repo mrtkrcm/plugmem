@@ -21,6 +21,7 @@ import pathlib
 from typing import Any, Dict, List, Optional
 
 import typer
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -444,7 +445,12 @@ def recall_cmd(
 
 @coding_app.command(
     "list",
-    help="List stored coding memories with optional filtering.",
+    help=(
+        "Browse stored coding memories scoped by provenance / source / "
+        "confidence. This is an **experience browser**, not a code index — "
+        "filters are metadata only. Use `plugmem coding recall` for "
+        "content-aware retrieval."
+    ),
 )
 def list_cmd(
     graph_id: str = typer.Option(
@@ -457,7 +463,30 @@ def list_cmd(
     ),
     language: Optional[str] = typer.Option(
         None, "--language", "-l",
-        help="Filter by programming language.",
+        help="Scope by provenance.language (e.g. python, swift).",
+    ),
+    repo: Optional[str] = typer.Option(
+        None, "--repo",
+        help="Scope by provenance.repo (e.g. github.com/org/name).",
+    ),
+    source_in: List[str] = typer.Option(
+        [], "--source",
+        help=(
+            "Filter by source (repeatable): explicit, correction, "
+            "failure_delta, merged, repeated_lookup."
+        ),
+    ),
+    min_confidence: float = typer.Option(
+        -1.0, "--min-confidence", "-c",
+        help="Minimum confidence (0-1).",
+    ),
+    query: Optional[str] = typer.Option(
+        None, "--query", "-q",
+        help=(
+            "Optional client-side content substring **post-filter** applied "
+            "after provenance/source/confidence scoping. For real content "
+            "retrieval use `plugmem coding recall`."
+        ),
     ),
     limit: int = typer.Option(
         50, "--limit", "-n",
@@ -472,35 +501,58 @@ def list_cmd(
     base, api_key = _resolve_url_and_key(cfg)
     gid = graph_id or cfg.coding.default_graph or "coding-agent"
 
-    # Use the search endpoint
-    query = language or ""
-    resp = _api_get(
-        f"{base}/api/v1/graphs/{gid}/search?q={query}&node_type={node_type}&limit={limit}",
-        _headers(api_key),
-    )
+    # Build query string for the metadata-filtered /nodes endpoint
+    params: List[str] = [f"node_type={node_type}", f"limit={limit}"]
+    if language:
+        params.append(f"language={urllib.parse.quote(language)}")
+    if repo:
+        params.append(f"repo={urllib.parse.quote(repo)}")
+    for s in source_in:
+        params.append(f"source_in={urllib.parse.quote(s)}")
+    mc = min_confidence if min_confidence >= 0 else cfg.coding.min_confidence
+    if mc and mc > 0:
+        params.append(f"min_confidence={mc}")
+
+    url = f"{base}/api/v1/graphs/{gid}/nodes?" + "&".join(params)
+    resp = _api_get(url, _headers(api_key))
+
+    nodes = resp.get("nodes", [])
+
+    def _node_text(n: Dict[str, Any]) -> str:
+        return (
+            n.get("semantic_memory")
+            or n.get("procedural_memory")
+            or n.get("text")
+            or ""
+        )
+
+    # Client-side content post-filter (kept narrow; recall is the real surface)
+    if query:
+        needle = query.casefold().strip()
+        nodes = [n for n in nodes if needle in _node_text(n).casefold()]
+        resp = {**resp, "nodes": nodes, "count": len(nodes)}
 
     if json_output:
         print(json.dumps(resp, indent=2))
         return
 
-    nodes = resp.get("nodes", [])
     if not nodes:
-        info(f"No {node_type} nodes found.")
+        info(f"No {node_type} nodes match the given filters.")
         return
 
     info(f"{len(nodes)} {node_type} node(s):")
     for n in nodes:
         nid = n.get("semantic_id") or n.get("procedural_id", "?")
-        text = n.get("text") or n.get("semantic_memory_str") or n.get("procedural_memory_str", "")
+        text = _node_text(n)
         source = n.get("source") or "—"
         conf = n.get("confidence", "—")
         prov = n.get("provenance") or {}
         lang = prov.get("language", "") if isinstance(prov, dict) else ""
-        repo = prov.get("repo", "") if isinstance(prov, dict) else ""
+        node_repo = prov.get("repo", "") if isinstance(prov, dict) else ""
         tags = []
         if lang:
             tags.append(lang)
-        if repo:
-            tags.append(repo.split("/")[-1])
+        if node_repo:
+            tags.append(node_repo.split("/")[-1])
         tag_suffix = f" [{', '.join(tags)}]" if tags else ""
         info(f"  [ID {nid}] ({source}, conf={conf}){tag_suffix}  {str(text)[:120]}")

@@ -20,6 +20,21 @@ _SOURCE_BOOST = {
 }
 
 
+def compute_source_boost(Source: Optional[str] = None, Confidence: float = 0.0) -> float:
+    """Apply a source- and confidence-aware boost.
+
+    Explicit user corrections rank highest, inferred failure deltas
+    rank lower, legacy nodes with no source get no boost.
+
+    The boost is scaled by confidence so a low-confidence correction
+    does not outrank a high-confidence failure delta.
+    """
+    if Source is None:
+        return 0.0
+    boost = _SOURCE_BOOST.get(Source, 0.0)
+    return boost * Confidence
+
+
 class RelevanceValueFunc(ValueBase):
     """Value function that scores primarily on relevance, with all other
     dimensions returning zero by default. Subclasses override ``k`` and
@@ -30,6 +45,7 @@ class RelevanceValueFunc(ValueBase):
     """
 
     def __init__(self, k: int = 1, value_threshold: float = 0.0):
+        # ValueBase declares __init__ abstract with no params; set state directly.
         self.k = k
         self.value_threshold = value_threshold
 
@@ -49,18 +65,7 @@ class RelevanceValueFunc(ValueBase):
         return 0
 
     def compute_source_boost(self, Source: Optional[str] = None, Confidence: float = 0.0) -> float:
-        """Apply a source- and confidence-aware boost.
-
-        Explicit user corrections rank highest, inferred failure deltas
-        rank lower, legacy nodes with no source get no boost.
-
-        The boost is scaled by confidence so a low-confidence correction
-        does not outrank a high-confidence failure delta.
-        """
-        if Source is None:
-            return 0.0
-        boost = _SOURCE_BOOST.get(Source, 0.0)
-        return boost * Confidence
+        return compute_source_boost(Source, Confidence)
 
 
 class TagEqual(RelevanceValueFunc):

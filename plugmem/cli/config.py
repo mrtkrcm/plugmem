@@ -51,6 +51,8 @@ class ServiceConfig(BaseModel):
     port: int = 8080
     api_key: str = ""
     data_dir: str = ""
+    storage_backend: str = "chroma"
+    sqlite_vec_path: str = ""
     log_level: str = "INFO"
     token_usage_file: str = ""
 
@@ -130,6 +132,8 @@ def save_config(cfg: PlugmemConfig, path: Optional[Path] = None) -> Path:
 _CONFIG_TO_ENV: Dict[str, str] = {
     "service.api_key": "PLUGMEM_API_KEY",
     "service.data_dir": "CHROMA_PATH",
+    "service.storage_backend": "STORAGE_BACKEND",
+    "service.sqlite_vec_path": "SQLITE_VEC_PATH",
     "service.token_usage_file": "TOKEN_USAGE_FILE",
     "llm.base_url": "LLM_BASE_URL",
     "llm.api_key": "LLM_API_KEY",
