@@ -9,6 +9,8 @@ import type {
   MemoryInsertRequest,
   MemoryInsertResponse,
   NodeListResponse,
+  PromoteRequest,
+  PromoteResponse,
   ReasonRequest,
   ReasonResponse,
   RetrieveRequest,
@@ -252,6 +254,19 @@ export class PlugMemClient {
       "POST",
       `/api/v1/graphs/${graphId}/consolidate`,
       options ?? {},
+    );
+  }
+
+  // ── Promotion ────────────────────────────────────────────────────
+
+  async promote(
+    graphId: string,
+    request: PromoteRequest,
+  ): Promise<PromoteResponse> {
+    return this.request<PromoteResponse>(
+      "POST",
+      `/api/v1/graphs/${graphId}/promote`,
+      request,
     );
   }
 

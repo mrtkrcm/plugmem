@@ -35,6 +35,7 @@ def test_parse_candidates_no_candidates():
             return "[]"
 
     llm = FakeLLM()
-    result = extract_coding_memories(llm, [])
-    assert result == []
+    mems, rejs = extract_coding_memories(llm, [])
+    assert mems == []
+    assert rejs == []
     assert llm.calls == []

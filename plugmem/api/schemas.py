@@ -18,6 +18,11 @@ MemorySource = Literal[
 ]
 
 
+CodingProvenance = Optional[Dict[str, Any]]
+# Keys: repo, branch, commit, language, filepath, package_manager,
+#       tool_name, tool_version, os, component
+
+
 # ------------------------------------------------------------------ #
 # Graphs
 # ------------------------------------------------------------------ #
@@ -47,11 +52,25 @@ class TrajectoryStep(BaseModel):
     action: str = Field(..., max_length=100000)
 
 
+class CodingProvenanceInput(BaseModel):
+    repo: Optional[str] = Field(None, max_length=500)
+    branch: Optional[str] = Field(None, max_length=500)
+    commit: Optional[str] = Field(None, max_length=100)
+    language: Optional[str] = Field(None, max_length=100)
+    filepath: Optional[str] = Field(None, max_length=2000)
+    package_manager: Optional[str] = Field(None, max_length=200)
+    tool_name: Optional[str] = Field(None, max_length=200)
+    tool_version: Optional[str] = Field(None, max_length=100)
+    os: Optional[str] = Field(None, max_length=200)
+    component: Optional[str] = Field(None, max_length=500)
+
+
 class SemanticMemoryInput(BaseModel):
     semantic_memory: str = Field(..., max_length=10000)
     tags: List[str] = Field(default_factory=list)
     source: Optional[MemorySource] = None
     confidence: float = Field(0.5, ge=0.0, le=1.0)
+    provenance: Optional[CodingProvenanceInput] = None
 
 
 class ProceduralMemoryInput(BaseModel):
@@ -60,6 +79,7 @@ class ProceduralMemoryInput(BaseModel):
     return_value: float = Field(0.0, alias="return")
     source: Optional[MemorySource] = None
     confidence: float = Field(0.5, ge=0.0, le=1.0)
+    provenance: Optional[CodingProvenanceInput] = None
 
     model_config = {"populate_by_name": True}
 
@@ -134,6 +154,15 @@ class RetrieveRequest(BaseModel):
         None,
         description="Restrict recall to memories whose source is in this list.",
     )
+    provenance_filters: Optional[Dict[str, List[str]]] = Field(
+        None,
+        max_length=10,
+        description=(
+            "Restrict recall to memories whose provenance matches these key/value pairs. "
+            "Keys: repo, branch, commit, language, filepath, package_manager, "
+            "tool_name, tool_version, os, component."
+        ),
+    )
     session_id: Optional[str] = Field(
         None,
         description="If set, the recall is logged against this session id.",
@@ -156,6 +185,15 @@ class ReasonRequest(BaseModel):
     mode: Optional[str] = None
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     source_in: Optional[List[MemorySource]] = None
+    provenance_filters: Optional[Dict[str, List[str]]] = Field(
+        None,
+        max_length=10,
+        description=(
+            "Restrict recall to memories whose provenance matches these key/value pairs. "
+            "Keys: repo, branch, commit, language, filepath, package_manager, "
+            "tool_name, tool_version, os, component."
+        ),
+    )
     session_id: Optional[str] = Field(
         None,
         description="If set, the reasoning recall is logged against this session id.",
@@ -172,7 +210,7 @@ class ReasonResponse(BaseModel):
 # Promotion-gate extraction
 # ------------------------------------------------------------------ #
 
-CandidateKind = Literal["failure_delta", "correction"]
+CandidateKind = Literal["failure_delta", "correction", "explicit", "repeated_lookup"]
 
 
 class CandidateInput(BaseModel):
@@ -192,10 +230,45 @@ class ExtractedMemory(BaseModel):
     procedural_memory: Optional[str] = None
     source: MemorySource
     confidence: float = Field(..., ge=0.0, le=1.0)
+    provenance: Optional[CodingProvenanceInput] = None
+
+
+class RejectedCandidate(BaseModel):
+    index: int
+    kind: str
+    reason: str
 
 
 class ExtractResponse(BaseModel):
     memories: List[ExtractedMemory] = Field(default_factory=list)
+    rejected: List[RejectedCandidate] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------------ #
+# Promotion (atomic extract + insert)
+# ------------------------------------------------------------------ #
+
+class PromoteRequest(BaseModel):
+    candidates: List[CandidateInput] = Field(default_factory=list)
+    source_in: Optional[List[MemorySource]] = Field(
+        None,
+        description="Only promote candidates whose extracted source matches this list.",
+    )
+    min_confidence: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="Only promote extracted memories with confidence >= this threshold.",
+    )
+
+
+class PromotedMemory(BaseModel):
+    node_type: Literal["semantic", "procedural"]
+    node_id: int
+    memory: ExtractedMemory
+
+
+class PromoteResponse(BaseModel):
+    inserted: List[PromotedMemory] = Field(default_factory=list)
+    dropped: List[RejectedCandidate] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------ #
@@ -279,6 +352,15 @@ class RecallTraceRequest(BaseModel):
     auto_plan: bool = Field(
         False,
         description="If True, fill missing mode/tags/subgoal via the LLM planner (paid).",
+    )
+    provenance_filters: Optional[Dict[str, List[str]]] = Field(
+        None,
+        max_length=10,
+        description=(
+            "Restrict recall to memories whose provenance matches these key/value pairs. "
+            "Keys: repo, branch, commit, language, filepath, package_manager, "
+            "tool_name, tool_version, os, component."
+        ),
     )
     session_id: Optional[str] = Field(
         None,

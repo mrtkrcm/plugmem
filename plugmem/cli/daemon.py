@@ -86,6 +86,50 @@ def _quick_health(cfg: PlugmemConfig) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _free_port(host: str, port: int) -> None:
+    """If something is listening on host:port, SIGTERM then SIGKILL it."""
+    import socket as _socket
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        s.settimeout(0.5)
+        if s.connect_ex((host, port)) != 0:
+            return  # port is free
+    finally:
+        s.close()
+
+    # Port is occupied — find the PID and kill it
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            ["lsof", "-ti", f"tcp:{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for pid_str in result.stdout.strip().splitlines():
+            try:
+                pid = int(pid_str.strip())
+                os.kill(pid, signal.SIGTERM)
+            except (ValueError, ProcessLookupError, OSError):
+                pass
+        # Wait for the port to be released
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as check:
+                check.settimeout(0.3)
+                if check.connect_ex((host, port)) != 0:
+                    return
+            time.sleep(0.2)
+        # Force kill
+        for pid_str in result.stdout.strip().splitlines():
+            try:
+                pid = int(pid_str.strip())
+                os.kill(pid, signal.SIGKILL)
+            except (ValueError, ProcessLookupError, OSError):
+                pass
+        time.sleep(0.3)
+    except Exception:
+        pass  # best-effort
+
+
 def start_daemon(
     cfg: PlugmemConfig,
     *,
@@ -98,6 +142,9 @@ def start_daemon(
         raise DaemonError(f"Daemon already running with PID {existing}")
     if existing and not _is_running(existing):
         _clear_pid_file()
+
+    # Ensure the port is free before spawning
+    _free_port(cfg.service.host, cfg.service.port)
 
     log_file = default_log_file()
     log_file.parent.mkdir(parents=True, exist_ok=True)

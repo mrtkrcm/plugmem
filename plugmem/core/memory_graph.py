@@ -24,6 +24,7 @@ from plugmem.core.graph_node import (
     TagNode,
 )
 from plugmem.core.memory import Memory
+from plugmem.core.graph_node import PROVENANCE_FIELDS
 from plugmem.core.normalize import normalize_memory
 from plugmem.core.value_base import ValueBase
 from plugmem.core.value_functions import (
@@ -59,11 +60,18 @@ def _passes_metadata_filter(
     node,
     min_confidence: Optional[float],
     source_in: Optional[List[str]],
+    provenance_filters: Optional[Dict[str, List[str]]] = None,
 ) -> bool:
     if min_confidence is not None and getattr(node, "confidence", 0.5) < min_confidence:
         return False
     if source_in is not None and getattr(node, "source", None) not in source_in:
         return False
+    if provenance_filters:
+        node_prov: dict = getattr(node, "provenance", {}) or {}
+        for key, values in provenance_filters.items():
+            nv = node_prov.get(key)
+            if nv is None or nv not in values:
+                return False
     return True
 
 
@@ -250,6 +258,7 @@ class MemoryGraph:
             _time = meta.get("time", 0)
             if not isinstance(_time, int):
                 _time = 0
+            provenance = {k: meta.get(f"provenance_{k}") for k in PROVENANCE_FIELDS if meta.get(f"provenance_{k}") is not None}
             node = SemanticNode(
                 semantic_id=meta["semantic_id"],
                 semantic_memory_str=doc or "",
@@ -261,6 +270,7 @@ class MemoryGraph:
                 credibility=meta.get("credibility", 10),
                 source=meta.get("source"),
                 confidence=float(meta.get("confidence", 0.5)),
+                provenance=provenance,
             )
             node.tags = _deserialize_list(meta.get("tags", "[]"))
             self.semantic_nodes.append(node)
@@ -305,6 +315,7 @@ class MemoryGraph:
         metas = data.get("metadatas", [])
         embs = self._safe_embeddings(data, len(docs))
         for doc, meta, emb in zip(docs, metas, embs):
+            provenance = {k: meta.get(f"provenance_{k}") for k in PROVENANCE_FIELDS if meta.get(f"provenance_{k}") is not None}
             node = ProceduralNode(
                 procedural_id=meta["procedural_id"],
                 procedural_memory_str=doc or "",
@@ -314,6 +325,7 @@ class MemoryGraph:
                 source=meta.get("source"),
                 confidence=float(meta.get("confidence", 0.5)),
                 session_id=meta.get("session_id"),
+                provenance=provenance,
             )
             self.procedural_nodes.append(node)
             self._track_session_node("procedural", node)
@@ -448,8 +460,61 @@ class MemoryGraph:
                 sg_node.is_active = True
 
     # ------------------------------------------------------------------ #
+    # Dedupe / upsert for coding memories
+    # ------------------------------------------------------------------ #
+
+    def _find_matching_semantic(
+        self,
+        text: str,
+        source: Optional[str],
+        threshold: float = 0.85,
+    ) -> Optional[SemanticNode]:
+        """Find an existing semantic node with similar text and same source."""
+        if not source or not text:
+            return None
+        text_emb = self.embedder.embed(text)
+        for node in self.semantic_nodes:
+            if not node.is_active:
+                continue
+            if source != getattr(node, "source", None):
+                continue
+            node_emb = node.embedding
+            if node_emb is None:
+                continue
+            sim = get_similarity(text_emb, node_emb)
+            if sim >= threshold:
+                return node
+        return None
+
+    def _find_matching_procedural(
+        self,
+        subgoal: str,
+        text: str,
+        source: Optional[str],
+        threshold: float = 0.85,
+    ) -> Optional[ProceduralNode]:
+        """Find an existing procedural node with similar text and same source."""
+        if not source or not text:
+            return None
+        text_emb = self.embedder.embed(text)
+        for node in self.procedural_nodes:
+            if source != getattr(node, "source", None):
+                continue
+            node_emb = node.embedding
+            if node_emb is None:
+                continue
+            sim = get_similarity(text_emb, node.embedding)
+            if sim >= threshold:
+                return node
+        return None
+
+    # ------------------------------------------------------------------ #
     # Unified insert
     # ------------------------------------------------------------------ #
+
+    def _empty_insert_memory(self) -> Memory:
+        """Create an empty Memory suitable for programmatic inserts."""
+        return Memory.from_structured(embedder=self.embedder, time=self.semantic_time)
 
     def insert(self, memory: Memory) -> None:
         """Insert structured memory into the graph and persist to ChromaDB."""
@@ -522,6 +587,7 @@ class MemoryGraph:
                 source=sem_item.get("source"),
                 confidence=float(sem_item.get("confidence", 0.5)),
                 session_id=sem_item.get("session_id", default_sid),
+                provenance=sem_item.get("provenance"),
             )
 
             # Link episodic nodes
@@ -582,6 +648,7 @@ class MemoryGraph:
             if isinstance(embedding_list, np.ndarray):
                 embedding_list = embedding_list.tolist()
 
+            provenance = getattr(sem_node, "provenance", None) or {}
             sem_batch.append({
                 "semantic_id": sem_node.semantic_id,
                 "text": sem_node.semantic_memory_str,
@@ -594,6 +661,7 @@ class MemoryGraph:
                 "bro_semantic_ids": bro_ids,
                 "source": sem_node.source,
                 "confidence": sem_node.confidence,
+                "provenance": provenance,
             })
         if sem_batch:
             self.storage.add_semantic_batch(self.graph_id, sem_batch)
@@ -662,6 +730,7 @@ class MemoryGraph:
                 source=proc_item.get("source"),
                 confidence=float(proc_item.get("confidence", 0.5)),
                 session_id=proc_item.get("session_id", default_sid),
+                provenance=proc_item.get("provenance"),
             )
             traj_num = proc_item.get("trajectory_num", 0)
             if traj_num < len(episodic_nodes):
@@ -679,6 +748,7 @@ class MemoryGraph:
                 sg_emb = sg_emb.tolist()
             proc_emb_list = proc_embedding if isinstance(proc_embedding, list) else proc_embedding.tolist() if isinstance(proc_embedding, np.ndarray) else proc_embedding
 
+            provenance = getattr(proc_node, "provenance", None) or {}
             proc_batch.append({
                 "procedural_id": proc_id,
                 "text": proc_str,
@@ -691,6 +761,7 @@ class MemoryGraph:
                 "source": proc_node.source,
                 "confidence": proc_node.confidence,
                 "session_id": proc_node.session_id,
+                "provenance": provenance,
             })
             sg_proc_ids = [p.procedural_id for p in subgoal_node.procedural_nodes]
             if is_new_subgoal:
@@ -811,6 +882,7 @@ class MemoryGraph:
         value_func: Optional[ValueBase] = None,
         min_confidence: Optional[float] = None,
         source_in: Optional[List[str]] = None,
+        provenance_filters: Optional[Dict[str, List[str]]] = None,
         _trace: Optional[Dict[str, Any]] = None,
     ) -> List[SemanticNode]:
         if value_func_tag is None or value_func is None:
@@ -832,6 +904,7 @@ class MemoryGraph:
             n_results=max(sem_node_topk, value_func.k * 2),
             min_confidence=min_confidence,
             source_in=source_in,
+            provenance_filters=provenance_filters,
         )
         top_sim_nodes = top_sim_nodes[:sem_node_topk]
 
@@ -886,7 +959,7 @@ class MemoryGraph:
         ))
         candidate_nodes = [
             n for n in candidate_nodes
-            if _passes_metadata_filter(n, min_confidence, source_in)
+            if _passes_metadata_filter(n, min_confidence, source_in, provenance_filters)
         ]
 
         candidate_trace: List[Dict[str, Any]] = []
@@ -903,6 +976,8 @@ class MemoryGraph:
             value = value_func.evaluate(
                 Relevance=relevance, Recency=recency,
                 Importance=importance_score, Credibility=sem_node.credibility,
+                Source=getattr(sem_node, "source", None),
+                Confidence=getattr(sem_node, "confidence", 0.5),
             )
             values.append((value, sem_node.semantic_id))
             if _trace is not None:
@@ -988,6 +1063,7 @@ class MemoryGraph:
         n_results: int,
         min_confidence: Optional[float] = None,
         source_in: Optional[List[str]] = None,
+        provenance_filters: Optional[Dict[str, List[str]]] = None,
     ) -> Tuple[List[SemanticNode], List[Tuple[float, int]]]:
         """Get semantic candidates by vector similarity, preferring Chroma query.
 
@@ -1025,7 +1101,7 @@ class MemoryGraph:
             node = self.semantic_id2node.get(sid)
             if node is None or not node.is_active:
                 continue
-            if not _passes_metadata_filter(node, min_confidence, source_in):
+            if not _passes_metadata_filter(node, min_confidence, source_in, provenance_filters):
                 continue
             if node.embedding is None:
                 node.embedding = self.embedder.embed(node.get_semantic_memory())
@@ -1038,7 +1114,7 @@ class MemoryGraph:
                     continue
                 if not node.is_active:
                     continue
-                if not _passes_metadata_filter(node, min_confidence, source_in):
+                if not _passes_metadata_filter(node, min_confidence, source_in, provenance_filters):
                     continue
                 if node.embedding is None:
                     node.embedding = self.embedder.embed(node.get_semantic_memory())
@@ -1131,6 +1207,7 @@ class MemoryGraph:
         self, subgoal: str, value_func_subgoal: ValueBase, value_func: ValueBase,
         min_confidence: Optional[float] = None,
         source_in: Optional[List[str]] = None,
+        provenance_filters: Optional[Dict[str, List[str]]] = None,
         _trace: Optional[Dict[str, Any]] = None,
     ) -> List[ProceduralNode]:
         embedding = self.embedder.embed(subgoal)
@@ -1152,7 +1229,7 @@ class MemoryGraph:
         values = []
         procedural_time = self.procedural_time
         for proc_node in subgoal_node.procedural_nodes:
-            if not _passes_metadata_filter(proc_node, min_confidence, source_in):
+            if not _passes_metadata_filter(proc_node, min_confidence, source_in, provenance_filters):
                 continue
             relevance = get_similarity(embedding, proc_node.embedding)
             recency = procedural_time - proc_node.time
@@ -1160,6 +1237,8 @@ class MemoryGraph:
                 Relevance=relevance,
                 Return=proc_node.return_value,
                 Recency=recency,
+                Source=getattr(proc_node, "source", None),
+                Confidence=getattr(proc_node, "confidence", 0.5),
             )
             values.append((value, proc_node.procedural_id))
             if _trace is not None:
@@ -1211,6 +1290,7 @@ class MemoryGraph:
         mode: str = None,
         min_confidence: Optional[float] = None,
         source_in: Optional[List[str]] = None,
+        provenance_filters: Optional[Dict[str, List[str]]] = None,
         _audit: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, str]], Dict[str, Any], str]:
         next_subgoal, query_tags = get_plan(
@@ -1240,6 +1320,7 @@ class MemoryGraph:
                 value_func=self.semantic_relevant,
                 min_confidence=min_confidence,
                 source_in=source_in,
+                provenance_filters=provenance_filters,
             )
         if mode in ["procedural_memory", "episodic_memory"]:
             procedural_nodes = self.retrieve_procedural_nodes(
@@ -1248,6 +1329,7 @@ class MemoryGraph:
                 value_func=self.procedural_relevant,
                 min_confidence=min_confidence,
                 source_in=source_in,
+                provenance_filters=provenance_filters,
             )
 
         semantic_memory_str = ""
@@ -1310,6 +1392,7 @@ class MemoryGraph:
         query_tags: Optional[List[str]] = None,
         next_subgoal: Optional[str] = None,
         auto_plan: bool = False,
+        provenance_filters: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, Any]:
         """Run the retrieval pipeline with full instrumentation.
 
@@ -1371,6 +1454,7 @@ class MemoryGraph:
                 semantic_memory={"semantic_memory": observation, "tags": query_tags},
                 value_func_tag=self.tag_relevant,
                 value_func=self.semantic_relevant,
+                provenance_filters=provenance_filters,
                 _trace=sem_trace,
             )
         if mode in ("procedural_memory", "episodic_memory"):
@@ -1378,6 +1462,7 @@ class MemoryGraph:
                 subgoal=next_subgoal,
                 value_func_subgoal=self.subgoal_relevant,
                 value_func=self.procedural_relevant,
+                provenance_filters=provenance_filters,
                 _trace=proc_trace,
             )
 

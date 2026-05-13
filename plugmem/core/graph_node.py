@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+PROVENANCE_FIELDS = [
+    "repo", "branch", "commit", "language", "filepath",
+    "package_manager", "tool_name", "tool_version", "os", "component",
+]
+
 
 class EpisodicNode:
     """Stores a single episodic memory (observation + action)."""
@@ -70,6 +75,7 @@ class SemanticNode:
         credibility: int = 10,
         source: Optional[str] = None,
         confidence: float = 0.5,
+        provenance: Optional[Dict[str, Any]] = None,
     ):
         self.semantic_id = semantic_id
         self.semantic_memory_str = semantic_memory_str
@@ -87,6 +93,7 @@ class SemanticNode:
         self.credibility = credibility
         self.source = source
         self.confidence = confidence
+        self.provenance: Dict[str, Any] = provenance or {}
 
     @property
     def embedding(self) -> Optional[np.ndarray]:
@@ -148,6 +155,7 @@ class ProceduralNode:
         source: Optional[str] = None,
         confidence: float = 0.5,
         session_id: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ):
         self.procedural_id = procedural_id
         self.procedural_memory_str = procedural_memory_str
@@ -160,6 +168,7 @@ class ProceduralNode:
         self.source = source
         self.confidence = confidence
         self.session_id = session_id
+        self.provenance: Dict[str, Any] = provenance or {}
 
     @property
     def embedding(self) -> Optional[np.ndarray]:

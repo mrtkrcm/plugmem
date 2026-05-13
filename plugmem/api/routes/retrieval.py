@@ -91,6 +91,7 @@ async def retrieve(graph_id: str, body: RetrieveRequest) -> RetrieveResponse:
             mode=body.mode,
             min_confidence=body.min_confidence,
             source_in=body.source_in,
+            provenance_filters=body.provenance_filters,
             _audit=audit,
         )
     _write_audit(graph, endpoint="retrieve", body=body, audit=audit, mode=mode, n_messages=len(messages))
@@ -118,6 +119,7 @@ async def reason(graph_id: str, body: ReasonRequest) -> ReasonResponse:
             mode=body.mode,
             min_confidence=body.min_confidence,
             source_in=body.source_in,
+            provenance_filters=body.provenance_filters,
             _audit=audit,
         )
 

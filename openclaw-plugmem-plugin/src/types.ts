@@ -90,6 +90,9 @@ export interface RetrieveRequest {
   task_type?: string;
   time?: string;
   mode?: "semantic_memory" | "episodic_memory" | "procedural_memory" | null;
+  source_in?: string[];
+  min_confidence?: number;
+  provenance_filters?: Record<string, string[]>;
 }
 
 export interface RetrieveResponse {
@@ -106,12 +109,45 @@ export interface ReasonRequest {
   task_type?: string;
   time?: string;
   mode?: "semantic_memory" | "episodic_memory" | "procedural_memory" | null;
+  source_in?: string[];
+  min_confidence?: number;
+  provenance_filters?: Record<string, string[]>;
 }
 
 export interface ReasonResponse {
   mode: string;
   reasoning: string;
   reasoning_prompt: Array<{ role: string; content: string }>;
+}
+
+// ── Promotion ───────────────────────────────────────────────────────
+
+export interface CandidateInput {
+  kind: string;
+  window: string;
+}
+
+export interface PromoteRequest {
+  candidates: CandidateInput[];
+  source_in?: string[];
+  min_confidence?: number;
+}
+
+export interface PromotedMemory {
+  node_type: string;
+  node_id: number;
+  memory: Record<string, unknown>;
+}
+
+export interface RejectedCandidate {
+  index: number;
+  kind: string;
+  reason: string;
+}
+
+export interface PromoteResponse {
+  inserted: PromotedMemory[];
+  dropped: RejectedCandidate[];
 }
 
 // ── Consolidation ───────────────────────────────────────────────────

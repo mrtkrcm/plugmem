@@ -152,10 +152,12 @@ curl -s http://localhost:8080/api/v1/graphs/my-agent/stats \
 
 ### `plugmem.remember`
 
-Two modes, picked by which params you pass:
+Three modes, picked by which params you pass:
 
 - **Semantic** — `text` (+ optional `tags`). One-liner facts, user
   preferences, domain knowledge.
+- **Procedural** — `subgoal` + `procedural_text`. A recipe or sequence
+  of steps that worked for a known subgoal.
 - **Trajectory** — `goal` + `steps[{observation, action}]`. A full
   agent run. PlugMem's structuring pipeline will extract semantic,
   procedural, and episodic memories from it.
@@ -166,6 +168,24 @@ Takes an `observation` (required) and optional `goal`, `mode`, `raw`. The
 default return is an LLM-synthesized answer over the top-ranked
 memories. Pass `raw: true` to get the retrieval prompt without synthesis —
 useful when you want to feed the memories into your own prompt.
+
+Supports optional filtering:
+- `source_in`: Only return memories with specific source types (correction, explicit, etc.).
+- `min_confidence`: Minimum confidence threshold (0.0–1.0).
+- `provenance_filters`: Restrict recall by provenance metadata. Example:
+  `{"language": ["python"], "repo": ["org/my-repo"]}`.
+
+### `plugmem.promote`
+
+Extract durable memory nodes from coding signals and store them. Accepts
+a list of `candidates`, each with a `kind` (correction, failure_delta,
+explicit, repeated_lookup) and a `window` of text describing the signal.
+
+Returns inserted node IDs and any rejected candidates with reasons.
+
+```text
+Use plugmem.promote with candidates=[{kind: "correction", window: "use uv, not pip"}]
+```
 
 ### Auto-remember
 
@@ -242,6 +262,97 @@ design.
 | Auto-remember never fires | `defaultGraphId` not set, or session had `< minSteps` turns. Check server stderr for `[plugmem] auto-remember` lines. |
 | `recall` returns empty reasoning | Graph exists but has no memories yet, or query embedding misses. Check `/stats`. |
 | Embedding errors on insert | `EMBEDDING_MODEL` mismatch with your endpoint. Default is `nvidia/NV-Embed-v2`. |
+
+---
+
+## Claude Code Integration
+
+PlugMem also ships as a [Model Context Protocol (MCP)](https://spec.modelcontextprotocol.io)
+server for **Claude Code**. It provides three tools: `plugmem_remember`,
+`plugmem_recall`, and `plugmem_promote`.
+
+### Setup
+
+The MCP server lives at `claude-code-plugmem-plugin/server.py`. Configure it
+in your Claude Code MCP config (`~/.claude/settings.json` or project-level
+`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "plugmem": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/PlugMem/claude-code-plugmem-plugin",
+        "server.py"
+      ],
+      "env": {
+        "PLUGMEM_BASE_URL": "http://127.0.0.1:8080",
+        "PLUGMEM_API_KEY": "dev-key-change-me",
+        "PLUGMEM_DEFAULT_GRAPH": "coding-agent"
+      }
+    }
+  }
+}
+```
+
+Replace `/absolute/path/to/PlugMem` with the actual path. The server uses `uv`
+to run — no separate install step needed.
+
+### Auto-create graph
+
+The server does **not** auto-create the graph on startup. Do it once:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/graphs \
+  -H "X-API-Key: dev-key-change-me" \
+  -H "Content-Type: application/json" \
+  -d '{"graph_id":"coding-agent"}'
+```
+
+Or use the CLI scaffold (recommended — also seeds language conventions):
+
+```bash
+plugmem coding scaffold --language python
+```
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `plugmem_remember` | Store a semantic memory (text + tags), procedural memory (subgoal + procedural_text), or full trajectory (goal + steps). Supports source, confidence, and coding provenance (repo, language, tool_name, etc.). |
+| `plugmem_recall` | Retrieve relevant memories. Supports source type filtering (`source_in`), confidence threshold (`min_confidence`), retrieval mode override (`mode`), provenance filtering (`provenance_filters`), and raw prompt output (`raw`). |
+| `plugmem_promote` | Extract and store durable memory from a coding signal (correction, failure delta, etc.). Returns node IDs and rejection reasons. |
+
+### Example: Claude Code memory loop
+
+Once configured, Claude Code automatically has access to the three tools.
+The agent can remember facts, recall past sessions, and promote coding signals
+all within the conversation:
+
+```
+You: Remember that I prefer uv over pip for Python dependency management.
+
+Claude: *calls plugmem_remember with text="User prefers uv over pip"*
+        Remembered. ✓
+
+You: (in a new conversation) How should I manage Python dependencies?
+
+Claude: *calls plugmem_recall with observation="Python dependency management"*
+        Based on your past sessions, you prefer using uv over pip.
+```
+
+For coding-agent workflows with provenance:
+
+```
+You: Note: always format Python code with ruff format, not black.
+
+Claude: *calls plugmem_remember with text="Format Python code with ruff format"
+        source="correction", language="python", tool_name="ruff"*
+        Remembered. ✓
+```
 
 ## Further reading
 

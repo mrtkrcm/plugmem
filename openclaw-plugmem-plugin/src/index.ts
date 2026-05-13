@@ -488,40 +488,57 @@ export function createPlugMemPlugin(config: PlugMemPluginConfig): PluginEntry {
           "LLM-synthesized reasoning over the most relevant memories " +
           "matching the query. Use this when you need to recall past " +
           "experiences, facts, or procedures.",
-        parameters: Type.Object({
-          graph_id: Type.Optional(
-            Type.String({
-              description: "Memory graph ID (uses default if omitted)",
-            }),
-          ),
-          observation: Type.String({
-            description:
-              "Current observation or question to recall memories for",
-          }),
-          goal: Type.Optional(
-            Type.String({ description: "Current task goal for context" }),
-          ),
-          mode: Type.Optional(
-            Type.Union(
-              [
-                Type.Literal("semantic_memory"),
-                Type.Literal("episodic_memory"),
-                Type.Literal("procedural_memory"),
-              ],
-              {
-                description:
-                  "Force a retrieval mode, or omit to let the service auto-detect",
-              },
+          parameters: Type.Object({
+            graph_id: Type.Optional(
+              Type.String({
+                description: "Memory graph ID (uses default if omitted)",
+              }),
             ),
-          ),
-          raw: Type.Optional(
-            Type.Boolean({
+            observation: Type.String({
               description:
-                "If true, return raw retrieval prompt instead of LLM reasoning (default: false)",
-              default: false,
+                "Current observation or question to recall memories for",
             }),
-          ),
-        }),
+            goal: Type.Optional(
+              Type.String({ description: "Current task goal for context" }),
+            ),
+            mode: Type.Optional(
+              Type.Union(
+                [
+                  Type.Literal("semantic_memory"),
+                  Type.Literal("episodic_memory"),
+                  Type.Literal("procedural_memory"),
+                ],
+                {
+                  description:
+                    "Force a retrieval mode, or omit to let the service auto-detect",
+                },
+              ),
+            ),
+            source_in: Type.Optional(
+              Type.Array(Type.String(), {
+                description:
+                  "Only return memories with these source types",
+              }),
+            ),
+            min_confidence: Type.Optional(
+              Type.Number({
+                description: "Minimum confidence threshold (0.0-1.0)",
+              }),
+            ),
+            provenance_filters: Type.Optional(
+              Type.Record(Type.String(), Type.Array(Type.String()), {
+                description:
+                  "Filter memories by provenance metadata (e.g. language, repo)",
+              }),
+            ),
+            raw: Type.Optional(
+              Type.Boolean({
+                description:
+                  "If true, return raw retrieval prompt instead of LLM reasoning (default: false)",
+                default: false,
+              }),
+            ),
+          }),
 
         async execute(_id, params) {
           try {
@@ -530,7 +547,7 @@ export function createPlugMemPlugin(config: PlugMemPluginConfig): PluginEntry {
               primaryGraphId,
               ...resolved.sharedReadGraphIds,
             ]);
-            const query = {
+            const query: Record<string, unknown> = {
               observation: params.observation as string,
               goal: params.goal as string | undefined,
               mode: params.mode as
@@ -539,6 +556,18 @@ export function createPlugMemPlugin(config: PlugMemPluginConfig): PluginEntry {
                 | "procedural_memory"
                 | undefined,
             };
+            const sf = params.source_in;
+            if (Array.isArray(sf) && sf.length > 0) {
+              query.source_in = sf;
+            }
+            const mc = params.min_confidence;
+            if (typeof mc === "number") {
+              query.min_confidence = mc;
+            }
+            const pf = params.provenance_filters;
+            if (typeof pf === "object" && pf !== null) {
+              query.provenance_filters = pf;
+            }
 
             // Single-graph path — preserve exact output shape for callers
             // that don't configure sharedReadGraphIds.
@@ -573,6 +602,89 @@ export function createPlugMemPlugin(config: PlugMemPluginConfig): PluginEntry {
             return textContent(
               formatFanOut(readGraphIds, settled, (r) => r.reasoning),
             );
+          } catch (err) {
+            return errorContent(err);
+          }
+        },
+      });
+
+      // ── plugmem.promote ──────────────────────────────────────────
+      api.registerTool({
+        name: "plugmem.promote",
+        description:
+          "Extract durable memory nodes from coding signals and store them. " +
+          "Accepts one or more candidates (kind + window). " +
+          "Returns inserted node IDs and any rejected candidates with reasons. " +
+          "Use this when you notice a pattern worth remembering.",
+        parameters: Type.Object({
+          graph_id: Type.Optional(
+            Type.String({
+              description: "Memory graph ID (uses default if omitted)",
+            }),
+          ),
+          candidates: Type.Array(
+            Type.Object({
+              kind: Type.String({
+                description: "Type of signal: correction, failure_delta, explicit, repeated_lookup",
+              }),
+              window: Type.String({
+                description: "Text context describing the signal",
+              }),
+            }),
+            {
+              description: "Candidates to promote (required)",
+              minItems: 1,
+            },
+          ),
+          source_in: Type.Optional(
+            Type.Array(Type.String(), {
+              description: "Only promote memories whose source matches this list",
+            }),
+          ),
+          min_confidence: Type.Optional(
+            Type.Number({
+              description: "Minimum confidence threshold (0.0-1.0)",
+            }),
+          ),
+        }),
+        async execute(_id, params) {
+          try {
+            const graphId = requireGraphId(params, defaultGraphId);
+            const result = await client.promote(graphId, {
+              candidates: params.candidates as Array<{
+                kind: string;
+                window: string;
+              }>,
+              source_in: params.source_in as string[] | undefined,
+              min_confidence: params.min_confidence as number | undefined,
+            });
+            const inserted = result.inserted ?? [];
+            const dropped = result.dropped ?? [];
+            const lines: string[] = [];
+            if (inserted.length > 0) {
+              lines.push(`Promoted ${inserted.length} memory node(s):`);
+              for (const m of inserted) {
+                const mem = m.memory ?? {};
+                const text =
+                  (mem.semantic_memory as string) ??
+                  (mem.procedural_memory as string) ??
+                  "";
+                lines.push(
+                  `  [ID ${m.node_id}] ${m.node_type} (${mem.source}, conf=${mem.confidence}): ${truncate(text, 120)}`,
+                );
+              }
+            } else {
+              lines.push("No memories were promoted.");
+            }
+            if (dropped.length > 0) {
+              lines.push(`${dropped.length} candidate(s) rejected:`);
+              for (const d of dropped) {
+                lines.push(
+                  `  #${d.index} (${d.kind}): ${d.reason}`,
+                );
+              }
+            }
+            return textContent(lines.join("\n"));
           } catch (err) {
             return errorContent(err);
           }

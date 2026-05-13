@@ -79,10 +79,26 @@ class EmbeddingConfig(BaseModel):
     max_text_len: int = 8192
 
 
+class CodingConfig(BaseModel):
+    """Coding-agent defaults used by ``plugmem coding`` commands."""
+    default_graph: str = ""
+    default_repo: str = ""
+    default_branch: str = ""
+    default_language: str = ""
+    default_package_manager: str = ""
+    default_tool_name: str = ""
+    default_tool_version: str = ""
+    default_os: str = ""
+    default_component: str = ""
+    source_filter: str = "correction,failure_delta"
+    min_confidence: float = 0.3
+
+
 class PlugmemConfig(BaseModel):
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    coding: CodingConfig = Field(default_factory=CodingConfig)
 
     def with_defaults_applied(self) -> PlugmemConfig:
         c = self.model_copy(deep=True)
@@ -126,6 +142,17 @@ _CONFIG_TO_ENV: Dict[str, str] = {
     "embedding.api_key": "EMBEDDING_API_KEY",
     "embedding.model": "EMBEDDING_MODEL",
     "embedding.max_text_len": "EMBEDDING_MAX_TEXT_LEN",
+    "coding.default_graph": "CODING_DEFAULT_GRAPH",
+    "coding.default_repo": "CODING_DEFAULT_REPO",
+    "coding.default_branch": "CODING_DEFAULT_BRANCH",
+    "coding.default_language": "CODING_DEFAULT_LANGUAGE",
+    "coding.default_package_manager": "CODING_DEFAULT_PACKAGE_MANAGER",
+    "coding.default_tool_name": "CODING_DEFAULT_TOOL_NAME",
+    "coding.default_tool_version": "CODING_DEFAULT_TOOL_VERSION",
+    "coding.default_os": "CODING_DEFAULT_OS",
+    "coding.default_component": "CODING_DEFAULT_COMPONENT",
+    "coding.source_filter": "CODING_SOURCE_FILTER",
+    "coding.min_confidence": "CODING_MIN_CONFIDENCE",
 }
 
 # Build default values from the model constructors so we can skip them.

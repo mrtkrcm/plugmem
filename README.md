@@ -32,8 +32,13 @@ For more details, please see the full paper: [https://arxiv.org/abs/2603.03296](
 ## Updates
 
 - **[2026-05]** 🚀 **Plugin release** — PlugMem now ships as installable plugins for AI coding agents.
-  Integrations available for **[OpenClaw](openclaw-plugmem-plugin/)** and **Claude Code** (see `plugin` branch).
+  Integrations available for **[OpenClaw](openclaw-plugmem-plugin/)** and **[Claude Code](claude-code-plugmem-plugin/)**.
   Highlights: inspect your memory graph, test retrieval interactively, and replay past agent sessions.
+
+- **[2026-05]** 🔧 **Coding-agent CLI** — New `plugmem coding scaffold` and `plugmem coding promote`
+  commands for setting up coding memory graphs and promoting signals from the terminal.
+  The `init` wizard now includes an optional coding-agent profile with defaults for
+  provenance, source filtering, and confidence thresholds.
 
   <p align="center">
     <img src="assets/plugmem_promotion_headline.png" alt="PlugMem Plugin" width="700"/>
@@ -61,7 +66,7 @@ mg.insert(mem)
 mg.retrieve_and_reason(...)
 ```
 - **Easy to modify**: Apply adaptive strategies by defining different value functions and reasoning prompts.
-- **Agent integrations**: Native plugins available for **[OpenClaw](openclaw-plugmem-plugin/)** and **Claude Code** (see `plugin` branch), with a built-in **Memory Inspector** UI for visualizing the memory graph, browsing individual memories, testing retrieval, and replaying agent trajectories.
+- **Agent integrations**: Native plugins available for **[OpenClaw](openclaw-plugmem-plugin/)** and **[Claude Code](claude-code-plugmem-plugin/)**, with a built-in **Memory Inspector** UI for visualizing the memory graph, browsing individual memories, testing retrieval, and replaying agent trajectories.
 
 <p align="center">
   <img src="assets/plugmem_memory_inspector.png" alt="Memory Inspector — Graph view" width="800"/>
@@ -174,6 +179,43 @@ Use `/memories/batch` when you are ingesting many structured items at once.
 It is structured-mode only and is much more efficient than issuing one HTTP
 request per memory item.
 
+### Claude Code Quick Start
+
+Configure the MCP server in `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "plugmem": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/PlugMem/claude-code-plugmem-plugin", "server.py"],
+      "env": {
+        "PLUGMEM_BASE_URL": "http://127.0.0.1:8080",
+        "PLUGMEM_API_KEY": "dev-key-change-me",
+        "PLUGMEM_DEFAULT_GRAPH": "coding-agent"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Code. The agent now has three tools:
+
+- `plugmem_remember` — Store facts with tags, source, confidence, and coding provenance
+- `plugmem_recall` — Retrieve relevant memories with source/confidence filters
+- `plugmem_promote` — Extract and store durable memory from coding signals
+
+Example conversation:
+
+```
+You: Remember that I use httpx, not requests.
+
+Claude: *calls plugmem_remember*
+        Remembered. ✓
+```
+
+The graph is auto-created on first tool use. No manual graph setup needed.
+
 ### Remote Deployment
 
 The supported remote path is a single-VM Docker Compose stack:
@@ -271,19 +313,70 @@ Run examples for different benchmarks:
 Usage: plugmem [OPTIONS] COMMAND [ARGS]...
 
 Commands:
-  init      Interactive setup wizard for LLM, embedding, and service settings.
+  init      Interactive setup wizard for LLM, embedding, service, and coding profile.
   start     Start the PlugMem service (daemonized by default).
   stop      Stop the running PlugMem daemon.
   restart   Restart the PlugMem daemon.
   status    Show daemon status, PID, port, and last health probe.
   logs      Print or tail the daemon log.
   health    One-shot health check against the running service.
+  coding    Coding-agent memory commands (scaffold, promote).
 ```
 
 The CLI uses XDG paths for config (`~/.config/plugmem/config.toml`), state
 (PID file at `~/.local/state/plugmem/plugmem.pid`), and data
 (`~/.local/share/plugmem/chroma/`). All config keys can be overridden at
 runtime via environment variables — `LLM_API_KEY=sk-... plugmem start`.
+
+### Coding-Agent CLI
+
+```text
+plugmem coding scaffold    # Create graph with language-specific conventions
+plugmem coding promote     # Promote signals (corrections, failures) into memory
+plugmem coding recall      # Retrieve relevant memories via /reason or /retrieve
+plugmem coding list        # List stored semantic or procedural nodes
+```
+
+The `init` wizard includes an optional coding-agent profile section that
+prepopulates defaults for `source_filter`, `min_confidence`, `default_graph`,
+`default_repo`, `default_language`, and `default_package_manager`. These live
+under `[coding]` in `config.toml` and can be overridden with
+`CODING_DEFAULT_GRAPH=my-graph plugmem coding promote ...`.
+
+Example workflow:
+
+```bash
+# 1. Init includes coding profile (or edit ~/.config/plugmem/config.toml)
+plugmem init
+
+# 2. Start the daemon
+plugmem start
+
+# 3. Scaffold a coding graph (auto-detects git repo/branch)
+plugmem coding scaffold --language python
+# → Creates graph 'coding-agent', seeds Python tooling conventions,
+#   attaches repo/branch provenance from git remote + HEAD
+
+# 4. Promote a correction
+plugmem coding promote --kind correction --window "user said: use httpx, not requests"
+# → LLM extracts a semantic memory, inserts with dedupe, prints node ID
+
+# 5. Promote a failure delta
+plugmem coding promote --kind failure_delta --window "pip install failed → uv sync succeeded"
+# → LLM extracts a procedural memory, inserts with dedupe
+
+# 6. Promote with filters
+plugmem coding promote --kind correction --window "use ruff" --source-filter correction --min-confidence 0.7
+# → Only accepts correction-type memories with confidence >= 0.7
+
+# 7. Recall relevant memories
+plugmem coding recall "how to install deps" --language python
+# → LLM-synthesized reasoning grounded in Python-relevant memories
+
+# 8. List stored nodes
+plugmem coding list --type semantic --language python
+# → Lists all semantic nodes with python provenance
+```
 
 ## Deployment Files
 
@@ -294,9 +387,124 @@ runtime via environment variables — `LLM_API_KEY=sk-... plugmem start`.
 - [deploy/systemd/plugmem-compose.service](deploy/systemd/plugmem-compose.service): optional start-on-boot unit
 - [docs/remote-deployment.md](docs/remote-deployment.md): end-to-end remote deployment guide
 
+## Coding-Agent Promotion
+
+PlugMem provides a first-class pipeline for coding agents to promote ephemeral signals into durable memory:
+
+### Atomic Extract + Insert
+
+```text
+POST /api/v1/graphs/{graph_id}/promote
+```
+
+Accepts coding candidates, runs LLM extraction, inserts accepted memories atomically with dedupe/upsert, and returns the inserted node IDs plus dropped candidates with reasons.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/graphs/my-agent/promote \
+  -H "Content-Type: application/json" \
+  -d '{
+    "candidates": [
+      {
+        "kind": "correction",
+        "window": "user said: use uv, not pip"
+      },
+      {
+        "kind": "failure_delta",
+        "window": "pip install failed → uv sync succeeded"
+      }
+    ]
+  }'
+# Response:
+# {
+#   "inserted": [
+#     {"node_type": "semantic", "node_id": 0, "memory": {...}},
+#     {"node_type": "procedural", "node_id": 1, "memory": {...}}
+#   ],
+#   "dropped": [
+#     {"index": 2, "kind": "failure_delta", "reason": "trivial fix - typo"}
+#   ]
+# }
+```
+
+Optional filters:
+- `source_in: ["correction"]` — only promote correction-type memories
+- `min_confidence: 0.7` — only promote memories above a confidence threshold
+
+### Extraction Only
+
+```text
+POST /api/v1/extract
+```
+
+Returns extracted memories and structured rejection reasons (index, kind, reason) without inserting them:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/extract \
+  -H "Content-Type: application/json" \
+  -d '{
+    "candidates": [
+      {"kind": "correction", "window": "use httpx, not requests"},
+      {"kind": "failure_delta", "window": "ambiguous trace"}
+    ]
+  }'
+```
+
+### Provenance Metadata
+
+When inserting coding memories directly via `/memories` or `/memories/batch`, attach provenance to make memories reusable across projects:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/graphs/my-agent/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "structured",
+    "semantic": [{
+      "semantic_memory": "Use uv, not pip",
+      "tags": ["python", "tooling"],
+      "source": "correction",
+      "confidence": 0.9,
+      "provenance": {
+        "repo": "org/repo",
+        "language": "python",
+        "tool_name": "uv"
+      }
+    }]
+  }'
+```
+
+Provenance fields: `repo`, `branch`, `commit`, `language`, `filepath`, `package_manager`, `tool_name`, `tool_version`, `os`, `component`. All optional strings.
+
+### Source-Aware Retrieval
+
+Coding memories benefit from source-aware scoring at retrieval time — explicit user corrections rank higher than inferred failure deltas. Filter by source and minimum confidence:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/graphs/my-agent/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "observation": "how to install dependencies",
+    "mode": "procedural_memory",
+    "source_in": ["correction", "failure_delta"],
+    "min_confidence": 0.5
+  }'
+```
+
+### Deduplication
+
+The promote endpoint detects near-duplicate coding signals (text similarity ≥ 0.85 + same source). Repeated corrections like "use uv, not pip" strengthen confidence on the existing node instead of creating new ones.
+
+```bash
+# Promote the same correction twice → node count stays at 1, confidence bumps
+curl -X POST http://localhost:8080/api/v1/graphs/my-agent/promote \
+  -H "Content-Type: application/json" \
+  -d '{"candidates": [{"kind": "correction", "window": "use uv"}]}'
+# → inserted[0].node_id = 0
+#   Same endpoint called again → same node_id = 0 (upserted)
+```
+
 ## High-Throughput Ingestion
 
-PlugMem now supports batched structured ingestion:
+PlugMem supports batched structured ingestion:
 
 ```text
 POST /api/v1/graphs/{graph_id}/memories/batch

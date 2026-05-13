@@ -76,10 +76,13 @@ def _serialize_semantic(n) -> Dict[str, Any]:
         "text": n.get_semantic_memory(),
         "tags": [t.tag for t in n.tag_nodes] or list(n.tags),
         "is_active": n.is_active,
-            "credibility": n.credibility,
+        "credibility": n.credibility,
         "session_id": n.session_id,
         "date": n.date,
         "time": n.time,
+        "source": n.source,
+        "confidence": n.confidence,
+        "provenance": getattr(n, "provenance", None) or {},
         "n_tags": len(n.tag_nodes),
         "n_episodics": len(n.episodic_nodes),
         "n_bro": len(n.bro_semantic_nodes),
@@ -117,6 +120,9 @@ def _serialize_procedural(n) -> Dict[str, Any]:
         "return": n.return_value,
         "time": n.time,
         "session_id": n.session_id,
+        "source": n.source,
+        "confidence": n.confidence,
+        "provenance": getattr(n, "provenance", None) or {},
         "n_episodics": len(n.episodic_nodes),
     }
 
@@ -275,6 +281,7 @@ async def recall_trace(graph_id: str, body: RecallTraceRequest) -> RecallTraceRe
             query_tags=body.query_tags,
             next_subgoal=body.next_subgoal,
             auto_plan=body.auto_plan,
+            provenance_filters=body.provenance_filters,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"recall failed: {exc}") from exc

@@ -308,6 +308,7 @@ class ChromaStorage:
         date: str = "",
         source: Optional[str] = None,
         confidence: float = 0.5,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         metadata: Dict[str, Any] = {
             "semantic_id": semantic_id,
@@ -326,6 +327,10 @@ class ChromaStorage:
             metadata["session_id"] = session_id
         if source is not None:
             metadata["source"] = source
+        if provenance:
+            for k, v in provenance.items():
+                if v is not None:
+                    metadata[f"provenance_{k}"] = str(v)
 
         col = self._col(graph_id, "semantic")
         kwargs: Dict[str, Any] = {
@@ -371,6 +376,11 @@ class ChromaStorage:
                 meta["session_id"] = r["session_id"]
             if r.get("source") is not None:
                 meta["source"] = r["source"]
+            provenance = r.get("provenance")
+            if provenance:
+                for k, v in provenance.items():
+                    if v is not None:
+                        meta[f"provenance_{k}"] = str(v)
             metas.append(meta)
             emb = r.get("embedding")
             if emb is not None:
@@ -635,6 +645,7 @@ class ChromaStorage:
         source: Optional[str] = None,
         confidence: float = 0.5,
         session_id: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         metadata: Dict[str, Any] = {
             "procedural_id": procedural_id,
@@ -650,6 +661,10 @@ class ChromaStorage:
             metadata["source"] = source
         if session_id is not None:
             metadata["session_id"] = session_id
+        if provenance:
+            for k, v in provenance.items():
+                if v is not None:
+                    metadata[f"provenance_{k}"] = str(v)
         col = self._col(graph_id, "procedural")
         kwargs: Dict[str, Any] = {
             "ids": [str(procedural_id)],
@@ -691,6 +706,11 @@ class ChromaStorage:
                 meta["source"] = r["source"]
             if r.get("session_id") is not None:
                 meta["session_id"] = r["session_id"]
+            provenance = r.get("provenance")
+            if provenance:
+                for k, v in provenance.items():
+                    if v is not None:
+                        meta[f"provenance_{k}"] = str(v)
             metas.append(meta)
             emb = r.get("embedding")
             if emb is not None:

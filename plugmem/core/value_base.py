@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 
 class ValueBase(ABC):
     """
     Base class for value functions that score a memory item.
-    Subclasses implement the four component scorers; the final value is their sum.
+    Subclasses implement the five component scorers; the final value is their sum.
     """
 
     @abstractmethod
@@ -21,6 +22,8 @@ class ValueBase(ABC):
         Recency: float = 0,
         Return: float = 0,
         Credibility: float = 0,
+        Source: Optional[str] = None,
+        Confidence: float = 0.0,
     ) -> float:
         return float(
             self.compute_importance(Importance)
@@ -28,6 +31,7 @@ class ValueBase(ABC):
             + self.compute_recency(Recency)
             + self.compute_return(Return)
             + self.compute_credibility(Credibility)
+            + self.compute_source_boost(Source, Confidence)
         )
 
     @abstractmethod
@@ -49,3 +53,10 @@ class ValueBase(ABC):
     @abstractmethod
     def compute_credibility(self, Credibility: float) -> float:
         raise NotImplementedError
+
+    def compute_source_boost(self, Source: Optional[str] = None, Confidence: float = 0.0) -> float:
+        """Override in subclasses to apply source-aware score boost.
+
+        By default returns 0 for backward compatibility.
+        """
+        return 0.0

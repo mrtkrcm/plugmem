@@ -30,7 +30,9 @@ def _no_leakage():
 def test_extract_no_candidates_returns_empty(client):
     resp = client.post("/api/v1/extract", json={"candidates": []})
     assert resp.status_code == 200
-    assert resp.json() == {"memories": []}
+    data = resp.json()
+    assert data["memories"] == []
+    assert data["rejected"] == []
 
 
 def _set_llm(canned: CannedLLM):
@@ -104,7 +106,10 @@ def test_extract_handles_unparseable_llm_output(client):
         "candidates": [{"kind": "correction", "window": "..."}],
     })
     assert resp.status_code == 200
-    assert resp.json() == {"memories": []}
+    data = resp.json()
+    assert data["memories"] == []
+    assert len(data["rejected"]) == 1
+    assert data["rejected"][0]["reason"] == "LLM output unparseable"
 
 
 def test_extract_strips_code_fences(client):
@@ -134,44 +139,46 @@ def test_extract_rejects_invalid_kind(client):
 
 def test_extractor_returns_empty_for_no_candidates():
     canned = CannedLLM("")
-    assert promo.extract_coding_memories(canned, []) == []
+    mems, rejs = promo.extract_coding_memories(canned, [])
+    assert mems == []
+    assert rejs == []
     assert canned.calls == []
 
 
 def test_extractor_filters_invalid_source():
-    canned = CannedLLM(json.dumps([
+    canned = CannedLLM(json.dumps({"memories": [
         {
             "type": "semantic",
             "semantic_memory": "x",
             "source": "not_a_real_source",
             "confidence": 0.7,
         },
-    ]))
-    out = promo.extract_coding_memories(canned, [{"kind": "correction", "window": "."}])
-    assert out == []
+    ], "rejections": []}))
+    mems, rejs = promo.extract_coding_memories(canned, [{"kind": "correction", "window": "."}])
+    assert mems == []
 
 
 def test_extractor_filters_missing_semantic_text():
-    canned = CannedLLM(json.dumps([
+    canned = CannedLLM(json.dumps({"memories": [
         {
             "type": "semantic",
             "semantic_memory": "",
             "source": "correction",
             "confidence": 0.7,
         },
-    ]))
-    out = promo.extract_coding_memories(canned, [{"kind": "correction", "window": "."}])
-    assert out == []
+    ], "rejections": []}))
+    mems, rejs = promo.extract_coding_memories(canned, [{"kind": "correction", "window": "."}])
+    assert mems == []
 
 
 def test_extractor_filters_partial_procedural():
-    canned = CannedLLM(json.dumps([
+    canned = CannedLLM(json.dumps({"memories": [
         {
             "type": "procedural",
             "subgoal": "x",
             "source": "failure_delta",
             "confidence": 0.7,
         },
-    ]))
-    out = promo.extract_coding_memories(canned, [{"kind": "failure_delta", "window": "."}])
-    assert out == []
+    ], "rejections": []}))
+    mems, rejs = promo.extract_coding_memories(canned, [{"kind": "failure_delta", "window": "."}])
+    assert mems == []

@@ -123,12 +123,14 @@ def _append_structured_payload(mem: Memory, graph, body: MemoryInsertRequest, em
     # Semantic: embed text + tags
     if body.semantic:
         for sem in body.semantic:
+            provenance = sem.provenance.model_dump(exclude_none=True) if sem.provenance else {}
             mem.memory["semantic"].append({
                 "semantic_memory": sem.semantic_memory,
                 "tags": sem.tags,
                 "source": sem.source,
                 "confidence": sem.confidence,
                 "session_id": body.session_id,
+                "provenance": provenance,
             })
             mem.memory_embedding["semantic"].append({
                 "semantic_memory": embedder.embed(sem.semantic_memory),
@@ -138,6 +140,7 @@ def _append_structured_payload(mem: Memory, graph, body: MemoryInsertRequest, em
     # Procedural: embed subgoal
     if body.procedural:
         for proc in body.procedural:
+            provenance = proc.provenance.model_dump(exclude_none=True) if proc.provenance else {}
             mem.memory["procedural"].append({
                 "subgoal": proc.subgoal,
                 "procedural_memory": proc.procedural_memory,
@@ -146,6 +149,7 @@ def _append_structured_payload(mem: Memory, graph, body: MemoryInsertRequest, em
                 "source": proc.source,
                 "confidence": proc.confidence,
                 "session_id": body.session_id,
+                "provenance": provenance,
             })
             mem.memory_embedding["procedural"].append({
                 "subgoal": embedder.embed(proc.subgoal),
