@@ -17,6 +17,21 @@ from plugmem.graph_manager import GraphManager
 from plugmem.storage.chroma import ChromaStorage
 
 
+def _collection_names(client) -> list[str]:
+    names: list[str] = []
+    for col in client.list_collections():
+        if isinstance(col, str):
+            names.append(col)
+        else:
+            names.append(getattr(col, "name", str(col)))
+    return names
+
+
+def _clear_all_collections(client) -> None:
+    for name in _collection_names(client):
+        client.delete_collection(name)
+
+
 # ------------------------------------------------------------------ #
 # Fake clients
 # ------------------------------------------------------------------ #
@@ -76,7 +91,10 @@ def fake_embedder():
 
 @pytest.fixture()
 def chroma_client():
-    return chromadb.EphemeralClient()
+    client = chromadb.EphemeralClient()
+    _clear_all_collections(client)
+    yield client
+    _clear_all_collections(client)
 
 
 @pytest.fixture()

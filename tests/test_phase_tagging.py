@@ -69,3 +69,32 @@ def test_phase_appears_in_log_entry(tmp_path):
     assert log_path.exists()
     phases = [json.loads(line)["phase"] for line in log_path.read_text().strip().splitlines()]
     assert phases == ["default", "extract", "reason"]
+
+
+def test_complete_raises_after_retries_exhausted():
+    from plugmem.clients.llm import OpenAICompatibleLLMClient
+
+    fake_client = OpenAICompatibleLLMClient.__new__(OpenAICompatibleLLMClient)
+    fake_client.model = "broken-model"
+    fake_client.max_retries = 2
+    fake_client.retry_delay = 0.0
+    fake_client.token_usage_file = None
+
+    class FailingCompletions:
+        @staticmethod
+        def create(**kw):
+            raise ValueError("boom")
+
+    fake_client._client = type("C", (), {
+        "chat": type("Chat", (), {
+            "completions": FailingCompletions(),
+        })(),
+    })()
+
+    try:
+        fake_client.complete(messages=[{"role": "user", "content": "hi"}])
+    except RuntimeError as exc:
+        assert "LLM completion failed after 2 attempts" in str(exc)
+        assert isinstance(exc.__cause__, ValueError)
+    else:
+        raise AssertionError("expected RuntimeError after retry exhaustion")

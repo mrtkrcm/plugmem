@@ -117,7 +117,10 @@ class PlugMemClient:
         for attempt in range(3):
             try:
                 with urlopen(req, timeout=timeout) as resp:
-                    return json.loads(resp.read().decode())
+                    payload = json.loads(resp.read().decode())
+                    if not isinstance(payload, dict):
+                        raise RuntimeError(f"invalid_json:{path}:expected object response")
+                    return payload
             except HTTPError as e:
                 detail = e.read().decode() if e.fp else str(e)
                 if e.code >= 500 and attempt < 2:
@@ -125,6 +128,8 @@ class PlugMemClient:
                     last_err = e
                     continue
                 raise RuntimeError(f"http_error:{e.code}:{path}:{detail}")
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"invalid_json:{path}:{e.msg}") from e
             except URLError as e:
                 if attempt < 2:
                     time.sleep(0.1 * (attempt + 1))
@@ -499,6 +504,9 @@ class PlugMemMCPServer:
     def _handle_call_tool(self, rid: int, params: Dict[str, Any]) -> None:
         name = params.get("name", "")
         args = params.get("arguments", {})
+        if not isinstance(args, dict):
+            self._write_msg(_rpc_error(-32602, "Tool arguments must be an object", rid))
+            return
         try:
             if name == "plugmem_remember":
                 result = self._tool_remember(args)
@@ -516,7 +524,10 @@ class PlugMemMCPServer:
             self._write_msg(_rpc_error(-32603, str(e), rid, {"traceback": traceback.format_exc()}))
 
     def _resolve_graph(self, args: Dict[str, Any]) -> str:
-        return args.get("graph_id", self.default_graph_id)
+        graph_id = args.get("graph_id")
+        if isinstance(graph_id, str):
+            graph_id = graph_id.strip()
+        return graph_id or self.default_graph_id
 
     def _ensure_graph(self, graph_id: str) -> None:
         """Auto-create the graph if it doesn't exist."""
@@ -792,7 +803,8 @@ class PlugMemMCPServer:
         if args.get("debug"):
             return json.dumps({"graph_id": graph_id, "node_type": node_type, "response": result}, indent=2)
         nodes = result.get("nodes", [])
-        lines = [f"{len(nodes)} {node_type} node(s)"]
+        total = int(result.get("count", len(nodes)))
+        lines = [f"{len(nodes)} {node_type} node(s) shown ({total} total matched)"]
         for node in nodes:
             text = node.get("semantic_memory") or node.get("procedural_memory") or ""
             lines.append(f"  [{node_type}] {text[:160]}")

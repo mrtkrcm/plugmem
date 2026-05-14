@@ -19,6 +19,7 @@ from plugmem.api.schemas import (
     NodeListResponse,
 )
 from plugmem.graph_manager import GraphManager
+from plugmem.storage.chroma import _deserialize_list
 
 router = APIRouter(prefix="/graphs", tags=["graphs"], dependencies=[Depends(require_api_key)])
 
@@ -39,10 +40,12 @@ def _serialize_storage_node(node_type: str, doc: str, meta: dict) -> dict:
         return {
             "semantic_id": meta["semantic_id"],
             "semantic_memory": doc or "",
-            "tags": meta.get("tags", []),
+            "tags": _deserialize_list(meta.get("tags", "[]")),
             "is_active": meta.get("is_active", 1),
             "credibility": meta.get("credibility", 10),
             "time": meta.get("time", 0),
+            "session_id": meta.get("session_id"),
+            "date": meta.get("date", ""),
             "source": meta.get("source"),
             "confidence": meta.get("confidence"),
             "provenance": prov or {},

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -39,6 +40,8 @@ def test_search_nodes_with_data(client):
 
 
 def test_search_fast_path_includes_document_text_for_sqlite_vec(monkeypatch, tmp_path):
+    pytest.importorskip("sqlite_vec")
+
     monkeypatch.setenv("STORAGE_BACKEND", "sqlite_vec")
     monkeypatch.setenv("SQLITE_VEC_PATH", str(tmp_path / "inspector.db"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

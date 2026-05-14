@@ -80,7 +80,46 @@ class HTTPEmbeddingClient(EmbeddingClient):
         raise RuntimeError(f"Failed to get embedding after {self.max_retries} attempts")
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        return [self.embed(t) for t in texts]
+        if not texts:
+            return []
+
+        payload = {
+            "model": self.model,
+            "input": [text[: self.max_text_len] for text in texts],
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = requests.post(
+                    self.base_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                result = response.json()
+                data = result.get("data")
+                if not isinstance(data, list) or len(data) != len(texts):
+                    raise RuntimeError(
+                        "Embedding endpoint returned an unexpected batch payload"
+                    )
+                return [row["embedding"] for row in data]
+            except Exception as e:
+                logger.warning(
+                    "[Attempt %d/%d] Batch embedding error: %s",
+                    attempt,
+                    self.max_retries,
+                    e,
+                )
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_delay)
+
+        raise RuntimeError(
+            f"Failed to get batch embeddings after {self.max_retries} attempts"
+        )
 
 
 class LocalDeterministicEmbeddingClient(EmbeddingClient):

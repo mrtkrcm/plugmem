@@ -15,6 +15,15 @@ def test_create_graph_with_custom_id(client):
     assert resp.json()["graph_id"] == "my_graph"
 
 
+def test_create_graph_with_duplicate_id_returns_conflict(client):
+    first = client.post("/api/v1/graphs", json={"graph_id": "dupe"})
+    assert first.status_code == 201
+
+    second = client.post("/api/v1/graphs", json={"graph_id": "dupe"})
+    assert second.status_code == 409
+    assert "already exists" in second.json()["detail"]
+
+
 def test_list_graphs(client):
     client.post("/api/v1/graphs", json={"graph_id": "g1"})
     client.post("/api/v1/graphs", json={"graph_id": "g2"})
@@ -58,6 +67,56 @@ def test_browse_procedural_nodes(client):
     assert row["subgoals"] == ["deploy app"]
     assert row["return"] == 1.0
     assert row["session_id"] == "run-1"
+
+
+def test_browse_semantic_nodes_deserializes_tags_and_includes_session_id(client):
+    client.post("/api/v1/graphs", json={"graph_id": "graph_sem"})
+    resp = client.post("/api/v1/graphs/graph_sem/memories", json={
+        "mode": "structured",
+        "session_id": "run-2",
+        "semantic": [
+            {
+                "semantic_memory": "Use uv for Python deps",
+                "tags": ["python", "tooling"],
+            }
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+
+    resp = client.get("/api/v1/graphs/graph_sem/nodes", params={"node_type": "semantic"})
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["nodes"][0]
+    assert set(row["tags"]) == {"python", "tooling"}
+    assert row["session_id"] == "run-2"
+
+
+def test_browse_nodes_count_respects_filters_across_pages(client):
+    client.post("/api/v1/graphs", json={"graph_id": "graph_page"})
+    resp = client.post("/api/v1/graphs/graph_page/memories", json={
+        "mode": "structured",
+        "semantic": [
+            {"semantic_memory": "python memory one", "tags": ["python"], "source": "explicit", "confidence": 0.9},
+            {"semantic_memory": "python memory two", "tags": ["python"], "source": "explicit", "confidence": 0.8},
+            {"semantic_memory": "swift memory", "tags": ["swift"], "source": "correction", "confidence": 0.4},
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+
+    page = client.get(
+        "/api/v1/graphs/graph_page/nodes",
+        params={
+            "node_type": "semantic",
+            "source_in": "explicit",
+            "min_confidence": 0.5,
+            "limit": 1,
+            "offset": 1,
+        },
+    )
+    assert page.status_code == 200, page.text
+    body = page.json()
+    assert body["count"] == 2
+    assert len(body["nodes"]) == 1
+    assert body["nodes"][0]["source"] == "explicit"
 
 
 def test_delete_graph(client):

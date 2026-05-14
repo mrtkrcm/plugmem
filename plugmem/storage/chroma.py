@@ -822,7 +822,8 @@ class ChromaStorage:
         if where is None:
             result["count"] = col.count()
         else:
-            result["count"] = len((col.get(where=where) or {}).get("ids", []))
+            count_result = col.get(where=where, include=[])
+            result["count"] = len((count_result or {}).get("ids", []))
         return result
 
     # ------------------------------------------------------------------ #

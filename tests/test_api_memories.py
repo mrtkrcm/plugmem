@@ -1,6 +1,7 @@
 """Tests for memory insertion endpoints."""
 
 import plugmem.core.memory_graph as mg_module
+from plugmem.clients.embedding import HTTPEmbeddingClient
 
 
 def test_insert_structured_semantic(client):
@@ -184,3 +185,42 @@ def test_batch_insert_empty_is_noop(client):
     resp = client.post("/api/v1/graphs/batch_empty/memories/batch", json={"items": []})
     assert resp.status_code == 200
     assert resp.json()["stats"]["semantic"] == 0
+
+
+def test_http_embedding_client_batches_requests(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"embedding": [1.0, 0.0]},
+                    {"embedding": [0.0, 1.0]},
+                ]
+            }
+
+    def fake_post(url, json, headers, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setattr("plugmem.clients.embedding.requests.post", fake_post)
+
+    client = HTTPEmbeddingClient(
+        base_url="https://example.test/v1/embeddings",
+        model="test-model",
+        api_key="secret",
+        timeout=7,
+    )
+    out = client.embed_batch(["alpha", "beta"])
+
+    assert out == [[1.0, 0.0], [0.0, 1.0]]
+    assert captured["url"] == "https://example.test/v1/embeddings"
+    assert captured["json"] == {"model": "test-model", "input": ["alpha", "beta"]}
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+    assert captured["timeout"] == 7

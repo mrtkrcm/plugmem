@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import json
+import sys
 from io import StringIO
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from server import PlugMemClient, PlugMemMCPServer
 
@@ -354,5 +358,41 @@ def test_promote(server, patch_urlopen):
 def test_browse_tool(server, patch_urlopen):
     _set_post_handler(lambda path, body: {"graph_id": "test-graph", "node_type": "semantic", "count": 1, "nodes": [{"semantic_memory": "Use uv, not pip"}]})
     result = server._tool_browse({"node_type": "semantic", "limit": 5})
-    assert "1 semantic node(s)" in result
+    assert "1 semantic node(s) shown (1 total matched)" in result
     assert "Use uv, not pip" in result
+
+
+def test_resolve_graph_strips_whitespace_and_falls_back_to_default(server):
+    assert server._resolve_graph({"graph_id": "  custom-graph  "}) == "custom-graph"
+    assert server._resolve_graph({"graph_id": "   "}) == "test-graph"
+
+
+def test_handle_call_tool_rejects_non_object_arguments(server, patch_urlopen):
+    out = StringIO()
+    with patch("server.sys.stdout", out):
+        server.handle_message(_mcp_msg("tools/call", {"name": "plugmem_browse", "arguments": []}))
+    msgs = _collect_output(out)
+    assert msgs[0]["error"]["code"] == -32602
+    assert "arguments must be an object" in msgs[0]["error"]["message"]
+
+
+def test_client_rejects_non_object_json_response(patch_urlopen):
+    client = PlugMemClient("http://localhost:8080", "test-key")
+
+    class ArrayResponse:
+        def read(self):
+            return b"[]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    with patch("server.urlopen", lambda req, timeout=30: ArrayResponse()):
+        try:
+            client.stats("graph")
+        except RuntimeError as exc:
+            assert "invalid_json:/api/v1/graphs/graph/stats:expected object response" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError for non-object JSON response")

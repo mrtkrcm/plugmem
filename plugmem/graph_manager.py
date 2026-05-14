@@ -49,6 +49,8 @@ class GraphManager:
         """Create a new memory graph. Returns the graph_id."""
         if graph_id is None:
             graph_id = uuid.uuid4().hex[:12]
+        elif self._storage.graph_exists(graph_id):
+            raise ValueError(f"Graph '{graph_id}' already exists")
 
         self._storage.create_graph(graph_id)
         graph = MemoryGraph(

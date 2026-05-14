@@ -105,6 +105,7 @@ class OpenAICompatibleLLMClient(LLMClient):
         top_p: float = 1.0,
         max_tokens: int = 4096,
     ) -> str:
+        last_err: Optional[Exception] = None
         for attempt in range(1, self.max_retries + 1):
             try:
                 response = self._client.chat.completions.create(
@@ -119,11 +120,14 @@ class OpenAICompatibleLLMClient(LLMClient):
                 return content.strip() if content else ""
 
             except Exception as e:
+                last_err = e
                 logger.warning("[Attempt %d/%d] LLM error: %s", attempt, self.max_retries, e)
                 if attempt < self.max_retries:
                     time.sleep(self.retry_delay)
 
-        return ""
+        raise RuntimeError(
+            f"LLM completion failed after {self.max_retries} attempts for model {self.model}"
+        ) from last_err
 
     def _log_usage(self, response: Any, messages: List[Dict[str, str]]) -> None:
         if not self.token_usage_file:
