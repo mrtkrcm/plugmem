@@ -11,8 +11,9 @@ if TYPE_CHECKING:
     from plugmem.storage.sqlite_vec import SqliteVecStorage
 
 # Storage backends share a duck-typed interface (create_graph, list_graphs,
-# add_/query_/get_all_ for each node type, recall audit). Code paths that
-# accept either backend should annotate against this alias.
+# add_/query_/get_all_ for each node type, recall audit, text search,
+# session-scoped queries). Code paths that accept either backend should
+# annotate against this alias.
 StorageBackend = Union[ChromaStorage, "SqliteVecStorage"]
 
 __all__ = ["ChromaStorage", "SqliteVecStorage", "StorageBackend"]

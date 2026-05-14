@@ -47,5 +47,6 @@ async def health_check() -> HealthResponse:
         llm_available=llm_ok,
         embedding_available=embedding_ok,
         chroma_available=storage_ok,
+        storage_available=storage_ok,
         storage_backend=cfg.storage_backend,
     )

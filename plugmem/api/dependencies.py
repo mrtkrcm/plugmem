@@ -30,14 +30,14 @@ def get_config() -> PlugMemConfig:
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_model=os.getenv("LLM_MODEL", ""),
         embedding_base_url=os.getenv("EMBEDDING_BASE_URL", ""),
-        embedding_model=os.getenv("EMBEDDING_MODEL", "nvidia/NV-Embed-v2"),
+        embedding_model=os.getenv("EMBEDDING_MODEL", ""),
         embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
         storage_backend=os.getenv("STORAGE_BACKEND", "chroma"),
         chroma_mode=os.getenv("CHROMA_MODE", "persistent"),
-        chroma_path=os.getenv("CHROMA_PATH", "./data/chroma"),
+        chroma_path=os.getenv("CHROMA_PATH", ""),
         chroma_host=os.getenv("CHROMA_HOST", "localhost"),
         chroma_port=int(os.getenv("CHROMA_PORT", "8000")),
-        sqlite_vec_path=os.getenv("SQLITE_VEC_PATH", "./data/plugmem.db"),
+        sqlite_vec_path=os.getenv("SQLITE_VEC_PATH", ""),
         api_key=os.getenv("PLUGMEM_API_KEY"),
         max_retries=int(os.getenv("LLM_MAX_RETRIES", "5")),
         llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.0")),
@@ -99,7 +99,7 @@ def get_embedder(config: PlugMemConfig | None = None) -> EmbeddingClient:
     cfg = config or get_config()
     openai_key = os.getenv("OPENAI_API_KEY", "")
 
-    if cfg.embedding_base_url:
+    if cfg.embedding_base_url and cfg.embedding_model:
         _embedding_client = HTTPEmbeddingClient(
             base_url=cfg.embedding_base_url,
             model=cfg.embedding_model,
@@ -148,12 +148,14 @@ def build_chroma_storage(cfg: PlugMemConfig) -> ChromaStorage:
     """Construct a ChromaStorage from config — the single place that builds Chroma clients."""
     import chromadb
 
+    chroma_path = cfg.chroma_path or os.path.join(os.getcwd(), "data", "chroma")
+
     if cfg.chroma_mode == "http":
         chroma_client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
     elif cfg.chroma_mode == "ephemeral":
         chroma_client = chromadb.EphemeralClient()
     else:
-        chroma_client = chromadb.PersistentClient(path=cfg.chroma_path)
+        chroma_client = chromadb.PersistentClient(path=chroma_path)
 
     embedder = get_embedder(cfg)
     embed_fn = PlugMemEmbeddingFunction(embedder)
@@ -180,7 +182,8 @@ def build_sqlite_vec_storage(cfg: PlugMemConfig, embedding_dim: int = 768):
             'dependency. Install with `pip install -e ".[sqlite-vec]"`.'
         ) from exc
 
-    db_path = Path(cfg.sqlite_vec_path).expanduser()
+    raw = cfg.sqlite_vec_path or os.path.join(os.getcwd(), "data", "plugmem.db")
+    db_path = Path(raw).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return SqliteVecStorage(str(db_path), embedding_dim=embedding_dim)
 
@@ -202,9 +205,11 @@ def get_graph_manager(config: PlugMemConfig | None = None) -> GraphManager:
     if _graph_manager is None:
         cfg = config or get_config()
         embedder = get_embedder(cfg)
-        # Probe the embedder output dimension for sqlite_vec schema creation.
-        probe = embedder.embed("x")
-        storage = build_storage(cfg, embedding_dim=len(probe))
+        if cfg.storage_backend == "sqlite_vec":
+            probe = embedder.embed("x")
+            storage = build_storage(cfg, embedding_dim=len(probe))
+        else:
+            storage = build_storage(cfg)
         llm = get_llm(cfg)
 
         _graph_manager = GraphManager(

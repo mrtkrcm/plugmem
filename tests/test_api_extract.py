@@ -43,6 +43,7 @@ def _set_llm(canned: CannedLLM):
 def test_extract_returns_parsed_memories(client):
     _set_llm(CannedLLM(json.dumps([
         {
+            "candidate_index": 0,
             "type": "semantic",
             "semantic_memory": "Use httpx, not requests",
             "tags": ["python", "convention"],
@@ -50,6 +51,7 @@ def test_extract_returns_parsed_memories(client):
             "confidence": 0.9,
         },
         {
+            "candidate_index": 1,
             "type": "procedural",
             "subgoal": "fix import error in tests",
             "procedural_memory": "pip install -e . then pytest",
@@ -67,6 +69,7 @@ def test_extract_returns_parsed_memories(client):
     data = resp.json()
     assert len(data["memories"]) == 2
     assert data["memories"][0]["type"] == "semantic"
+    assert data["memories"][0]["candidate_index"] == 0
     assert data["memories"][0]["source"] == "correction"
     assert data["memories"][1]["type"] == "procedural"
 

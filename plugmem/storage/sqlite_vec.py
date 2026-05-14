@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
@@ -44,6 +46,26 @@ def _serialize(v: Any) -> bytes:
     if hasattr(v, "tolist"):
         v = v.tolist()
     return serialize_float32(v)
+
+
+def _deserialize_embedding(blob: Any) -> Optional[List[float]]:
+    """Decode a sqlite-vec float32 BLOB back into a Python list."""
+    if blob is None:
+        return None
+    if isinstance(blob, memoryview):
+        blob = blob.tobytes()
+    if isinstance(blob, bytearray):
+        blob = bytes(blob)
+    if isinstance(blob, bytes):
+        return np.frombuffer(blob, dtype=np.float32).tolist()
+    return list(blob)
+
+
+def _json_load(value: Any, default: Any) -> Any:
+    """Decode JSON-serialized sqlite metadata fields."""
+    if value in (None, ""):
+        return default
+    return json.loads(value)
 
 
 def _ensure_vec_db(conn: sqlite3.Connection) -> None:
@@ -67,7 +89,8 @@ CREATE TABLE IF NOT EXISTS "{gid}_semantic_meta" (
     provenance TEXT NOT NULL DEFAULT '{}',
     tag_ids TEXT NOT NULL DEFAULT '[]',
     episodic_ids TEXT NOT NULL DEFAULT '[]',
-    bro_semantic_ids TEXT NOT NULL DEFAULT '[]'
+    bro_semantic_ids TEXT NOT NULL DEFAULT '[]',
+    son_semantic_ids TEXT NOT NULL DEFAULT '[]'
 );
 """
 _SCHEMA_SEMANTIC_VEC = """
@@ -183,10 +206,46 @@ class SqliteVecStorage:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         _ensure_vec_db(self._conn)
+        existing_dim = self._detect_schema_dim()
+        if existing_dim is not None:
+            if existing_dim != embedding_dim:
+                raise ValueError(
+                    f"SqliteVecStorage schema dim={existing_dim} does not match "
+                    f"embedder dim={embedding_dim}. "
+                    "Clear the database or set STORAGE_BACKEND=chroma to use a "
+                    "different embedder."
+                )
+            self._embedding_dim = existing_dim
+        else:
+            self._embedding_dim = embedding_dim
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         # Track which graphs have had their schema created
         self._initialized: set[str] = set()
+
+    def _detect_schema_dim(self) -> Optional[int]:
+        """Detect the embedding dimension from existing vec0 tables, if any."""
+        cur = self._conn.cursor()
+        try:
+            cur.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND sql LIKE '%vec0(%'"
+            )
+        except sqlite3.OperationalError:
+            return None
+        dims: set[int] = set()
+        for (ddl,) in cur.fetchall():
+            m = re.search(r"float\[(\d+)]", ddl)
+            if m:
+                dims.add(int(m.group(1)))
+        if not dims:
+            return None
+        if len(dims) == 1:
+            return dims.pop()
+        raise ValueError(
+            f"Found vec0 tables with inconsistent dimensions: {dims}. "
+            "Cannot determine schema dimension."
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -203,6 +262,7 @@ class SqliteVecStorage:
             dim = self._embedding_dim
             for sql in [_SCHEMA_SEMANTIC, _SCHEMA_SEMANTIC_VEC]:
                 cur.execute(_fmt(sql, graph_id, dim))
+            self._ensure_semantic_meta_columns(cur, graph_id)
             for sql in [_SCHEMA_PROCEDURAL, _SCHEMA_PROCEDURAL_VEC]:
                 cur.execute(_fmt(sql, graph_id, dim))
             for sql in [_SCHEMA_TAG, _SCHEMA_TAG_VEC]:
@@ -213,6 +273,36 @@ class SqliteVecStorage:
             cur.execute(_fmt(_SCHEMA_RECALL, graph_id, dim))
             self._conn.commit()
             self._initialized.add(graph_id)
+
+    def _ensure_semantic_meta_columns(self, cur: sqlite3.Cursor, graph_id: str) -> None:
+        """Add semantic metadata columns introduced after initial table creation."""
+        table_name = f"{graph_id}_semantic_meta"
+        cur.execute(f'PRAGMA table_info("{table_name}")')
+        existing = {row["name"] for row in cur.fetchall()}
+        if "son_semantic_ids" not in existing:
+            cur.execute(
+                f'ALTER TABLE "{table_name}" '
+                "ADD COLUMN son_semantic_ids TEXT NOT NULL DEFAULT '[]'"
+            )
+
+    def _fetch_rows_by_ids(
+        self,
+        graph_id: str,
+        table_suffix: str,
+        id_col: str,
+        ids: List[int],
+    ) -> Dict[int, sqlite3.Row]:
+        """Fetch a set of metadata rows once, keyed by integer id."""
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        cur = self._conn.cursor()
+        cur.execute(
+            f'SELECT * FROM "{graph_id}_{table_suffix}" '
+            f"WHERE {id_col} IN ({placeholders})",
+            ids,
+        )
+        return {int(row[id_col]): row for row in cur.fetchall()}
 
     # ------------------------------------------------------------------ #
     # Graph lifecycle
@@ -238,7 +328,7 @@ class SqliteVecStorage:
     def list_graphs(self) -> List[str]:
         cur = self._conn.cursor()
         cur.execute(
-            "SELECT DISTINCT SUBSTR(name, 1, LENGTH(name) - 12) "
+            "SELECT DISTINCT SUBSTR(name, 1, LENGTH(name) - 14) "
             "FROM sqlite_master WHERE type='table' AND name LIKE '%_semantic_meta'"
         )
         return sorted(row[0] for row in cur.fetchall())
@@ -301,7 +391,15 @@ class SqliteVecStorage:
         cur = self._conn.cursor()
         cur.execute(f'SELECT * FROM "{graph_id}_episodic" ORDER BY episodic_id')
         rows = cur.fetchall()
-        return {"documents": [dict(r) for r in rows], "metadatas": [dict(r) for r in rows]}
+        docs, metas, ids = [], [], []
+        for r in rows:
+            d = dict(r)
+            ids.append(d["episodic_id"])
+            obs = d.get("observation", "")
+            act = d.get("action", "")
+            docs.append(f"{obs}\n{act}" if obs or act else "")
+            metas.append(d)
+        return {"documents": docs, "metadatas": metas, "ids": ids}
 
     # ------------------------------------------------------------------ #
     # Semantic
@@ -319,8 +417,9 @@ class SqliteVecStorage:
                 cur.execute(
                     f'INSERT INTO "{graph_id}_semantic_meta"('
                     "semantic_id,text,tags,time,is_active,credibility,session_id,date,"
-                    "source,confidence,provenance,tag_ids,episodic_ids,bro_semantic_ids) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "source,confidence,provenance,tag_ids,episodic_ids,bro_semantic_ids,"
+                    "son_semantic_ids) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         item["semantic_id"],
                         item.get("text", ""),
@@ -336,6 +435,7 @@ class SqliteVecStorage:
                         json.dumps(item.get("tag_ids", [])),
                         json.dumps(item.get("episodic_ids", [])),
                         json.dumps(item.get("bro_semantic_ids", [])),
+                        json.dumps(item.get("son_semantic_ids", [])),
                     ),
                 )
                 emb = item.get("embedding")
@@ -363,7 +463,7 @@ class SqliteVecStorage:
                 updates["text"] = text
             if metadata_updates:
                 for k, v in metadata_updates.items():
-                    if k in ("tags", "provenance", "tag_ids", "episodic_ids", "bro_semantic_ids"):
+                    if k in ("tags", "provenance", "tag_ids", "episodic_ids", "bro_semantic_ids", "son_semantic_ids"):
                         updates[k] = json.dumps(v)
                     else:
                         updates[k] = v
@@ -396,16 +496,54 @@ class SqliteVecStorage:
         )
         vec_rows = cur.fetchall()
 
+        if where:
+            meta_ids = [r[0] for r in vec_rows]
+            if not meta_ids:
+                return {"documents": [], "metadatas": [], "ids": []}
+            placeholders = ",".join("?" * len(meta_ids))
+            conditions = [f"{k}=?" for k in where]
+            cur.execute(
+                f'SELECT semantic_id FROM "{graph_id}_semantic_meta" '
+                f'WHERE {" AND ".join(conditions)} AND semantic_id IN ({placeholders})',
+                list(where.values()) + meta_ids,
+            )
+            allowed = {r[0] for r in cur.fetchall()}
+            vec_rows = [r for r in vec_rows if r[0] in allowed]
+
         ids = [r[0] for r in vec_rows]
+        distances = [r[1] for r in vec_rows]
+        row_map = self._fetch_rows_by_ids(graph_id, "semantic_meta", "semantic_id", ids)
         docs, metas = [], []
         for sid in ids:
-            cur.execute(f'SELECT * FROM "{graph_id}_semantic_meta" WHERE semantic_id=?', (sid,))
-            row = cur.fetchone()
-            if row is not None:
-                d = dict(row)
-                docs.append(d.pop("text", ""))
-                metas.append(d)
-        return {"documents": docs, "metadatas": metas, "ids": ids}
+            row = row_map.get(sid)
+            if row is None:
+                continue
+            d = dict(row)
+            docs.append(d.pop("text", ""))
+            metas.append(d)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "distances": distances}
+
+    def _attach_embeddings(self, graph_id: str, id_col: str, table_suffix: str, ids: List[int]) -> List[Optional[List[float]]]:
+        """Fetch embeddings from vec0 table, returning one per id (None if missing)."""
+        if not ids:
+            return []
+        cur = self._conn.cursor()
+        try:
+            placeholders = ",".join("?" * len(ids))
+            cur.execute(
+                f'SELECT {id_col}, embedding FROM "{graph_id}_{table_suffix}" '
+                f"WHERE {id_col} IN ({placeholders})",
+                ids,
+            )
+            emb_map: Dict[int, List[float]] = {}
+            for row in cur.fetchall():
+                raw = row["embedding"]
+                decoded = _deserialize_embedding(raw)
+                if decoded is not None:
+                    emb_map[row[0]] = decoded
+            return [emb_map.get(i) for i in ids]
+        except sqlite3.OperationalError:
+            return [None] * len(ids)
 
     def get_all_semantic(self, graph_id: str) -> Dict:
         self._ensure_graph_tables(graph_id)
@@ -417,13 +555,9 @@ class SqliteVecStorage:
             d = dict(r)
             ids.append(d["semantic_id"])
             docs.append(d.pop("text", ""))
-            d["tags"] = json.loads(d.get("tags", "[]"))
-            d["provenance"] = json.loads(d.get("provenance", "{}"))
-            d["tag_ids"] = json.loads(d.get("tag_ids", "[]"))
-            d["episodic_ids"] = json.loads(d.get("episodic_ids", "[]"))
-            d["bro_semantic_ids"] = json.loads(d.get("bro_semantic_ids", "[]"))
             metas.append(d)
-        return {"documents": docs, "metadatas": metas, "ids": ids}
+        embeddings = self._attach_embeddings(graph_id, "semantic_id", "semantic_vec", ids)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "embeddings": embeddings}
 
     # ------------------------------------------------------------------ #
     # Tag
@@ -523,30 +657,33 @@ class SqliteVecStorage:
             "WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
             (emb_bytes, max(1, min(n_results, 100))),
         )
-        ids = [r[0] for r in cur.fetchall()]
+        rows = cur.fetchall()
+        ids = [r[0] for r in rows]
+        distances = [r[1] for r in rows]
+        row_map = self._fetch_rows_by_ids(graph_id, "tag_meta", "tag_id", ids)
         docs, metas = [], []
         for tid in ids:
-            cur.execute(f'SELECT * FROM "{graph_id}_tag_meta" WHERE tag_id=?', (tid,))
-            row = cur.fetchone()
-            if row:
-                d = dict(row)
-                d["semantic_ids"] = json.loads(d.get("semantic_ids", "[]"))
-                docs.append(d.pop("tag", ""))
-                metas.append(d)
-        return {"documents": docs, "metadatas": metas, "ids": ids}
+            row = row_map.get(tid)
+            if row is None:
+                continue
+            d = dict(row)
+            docs.append(d.pop("tag", ""))
+            metas.append(d)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "distances": distances}
 
     def get_all_tags(self, graph_id: str) -> Dict:
         self._ensure_graph_tables(graph_id)
         cur = self._conn.cursor()
         cur.execute(f'SELECT * FROM "{graph_id}_tag_meta" ORDER BY tag_id')
         rows = cur.fetchall()
-        docs, metas = [], []
+        docs, metas, ids = [], [], []
         for r in rows:
             d = dict(r)
-            d["semantic_ids"] = json.loads(d.get("semantic_ids", "[]"))
+            ids.append(d["tag_id"])
             docs.append(d.pop("tag", ""))
             metas.append(d)
-        return {"documents": docs, "metadatas": metas}
+        embeddings = self._attach_embeddings(graph_id, "tag_id", "tag_vec", ids)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "embeddings": embeddings}
 
     # ------------------------------------------------------------------ #
     # Subgoal
@@ -592,8 +729,11 @@ class SqliteVecStorage:
             if subgoal is not None:
                 cur.execute(f'UPDATE "{graph_id}_subgoal_meta" SET subgoal=? WHERE subgoal_id=?', (subgoal, subgoal_id))
             if metadata_updates:
-                sets = ", ".join(f"{k}=?" for k in metadata_updates)
-                vals = list(metadata_updates.values()) + [subgoal_id]
+                payload: Dict[str, Any] = {}
+                for k, v in metadata_updates.items():
+                    payload[k] = json.dumps(v) if k == "procedural_ids" else v
+                sets = ", ".join(f"{k}=?" for k in payload)
+                vals = list(payload.values()) + [subgoal_id]
                 cur.execute(f'UPDATE "{graph_id}_subgoal_meta" SET {sets} WHERE subgoal_id=?', vals)
             if embedding is not None:
                 cur.execute(
@@ -615,30 +755,33 @@ class SqliteVecStorage:
             "WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
             (emb_bytes, max(1, min(n_results, 100))),
         )
-        ids = [r[0] for r in cur.fetchall()]
+        rows = cur.fetchall()
+        ids = [r[0] for r in rows]
+        distances = [r[1] for r in rows]
+        row_map = self._fetch_rows_by_ids(graph_id, "subgoal_meta", "subgoal_id", ids)
         docs, metas = [], []
         for sid in ids:
-            cur.execute(f'SELECT * FROM "{graph_id}_subgoal_meta" WHERE subgoal_id=?', (sid,))
-            row = cur.fetchone()
-            if row:
-                d = dict(row)
-                d["procedural_ids"] = json.loads(d.get("procedural_ids", "[]"))
-                docs.append(d.pop("subgoal", ""))
-                metas.append(d)
-        return {"documents": docs, "metadatas": metas}
+            row = row_map.get(sid)
+            if row is None:
+                continue
+            d = dict(row)
+            docs.append(d.pop("subgoal", ""))
+            metas.append(d)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "distances": distances}
 
     def get_all_subgoals(self, graph_id: str) -> Dict:
         self._ensure_graph_tables(graph_id)
         cur = self._conn.cursor()
         cur.execute(f'SELECT * FROM "{graph_id}_subgoal_meta" ORDER BY subgoal_id')
         rows = cur.fetchall()
-        docs, metas = [], []
+        docs, metas, ids = [], [], []
         for r in rows:
             d = dict(r)
-            d["procedural_ids"] = json.loads(d.get("procedural_ids", "[]"))
+            ids.append(d["subgoal_id"])
             docs.append(d.pop("subgoal", ""))
             metas.append(d)
-        return {"documents": docs, "metadatas": metas}
+        embeddings = self._attach_embeddings(graph_id, "subgoal_id", "subgoal_vec", ids)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "embeddings": embeddings}
 
     # ------------------------------------------------------------------ #
     # Procedural
@@ -725,32 +868,169 @@ class SqliteVecStorage:
             "WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
             (emb_bytes, max(1, min(n_results, 100))),
         )
-        ids = [r[0] for r in cur.fetchall()]
+        rows = cur.fetchall()
+        ids = [r[0] for r in rows]
+        distances = [r[1] for r in rows]
+        row_map = self._fetch_rows_by_ids(graph_id, "procedural_meta", "procedural_id", ids)
         docs, metas = [], []
         for pid in ids:
-            cur.execute(f'SELECT * FROM "{graph_id}_procedural_meta" WHERE procedural_id=?', (pid,))
-            row = cur.fetchone()
-            if row:
-                d = dict(row)
-                d["episodic_ids"] = json.loads(d.get("episodic_ids", "[]"))
-                d["provenance"] = json.loads(d.get("provenance", "{}"))
-                docs.append(d.pop("text", ""))
-                metas.append(d)
-        return {"documents": docs, "metadatas": metas}
+            row = row_map.get(pid)
+            if row is None:
+                continue
+            d = dict(row)
+            docs.append(d.pop("text", ""))
+            metas.append(d)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "distances": distances}
 
     def get_all_procedural(self, graph_id: str) -> Dict:
         self._ensure_graph_tables(graph_id)
         cur = self._conn.cursor()
         cur.execute(f'SELECT * FROM "{graph_id}_procedural_meta" ORDER BY procedural_id')
         rows = cur.fetchall()
-        docs, metas = [], []
+        docs, metas, ids = [], [], []
         for r in rows:
             d = dict(r)
-            d["episodic_ids"] = json.loads(d.get("episodic_ids", "[]"))
-            d["provenance"] = json.loads(d.get("provenance", "{}"))
+            ids.append(d["procedural_id"])
             docs.append(d.pop("text", ""))
             metas.append(d)
-        return {"documents": docs, "metadatas": metas}
+        embeddings = self._attach_embeddings(graph_id, "procedural_id", "procedural_vec", ids)
+        return {"documents": docs, "metadatas": metas, "ids": ids, "embeddings": embeddings}
+
+    # ------------------------------------------------------------------ #
+    # Text search (Inspector UI)
+    # ------------------------------------------------------------------ #
+
+    _TEXT_SEARCH_TABLE = {
+        "semantic": "semantic_meta",
+        "procedural": "procedural_meta",
+        "tag": "tag_meta",
+        "subgoal": "subgoal_meta",
+        "episodic": "episodic",
+    }
+
+    _TEXT_SEARCH_COL = {
+        "semantic": "text",
+        "procedural": "text",
+        "tag": "tag",
+        "subgoal": "subgoal",
+        "episodic": "observation",
+    }
+
+    _TEXT_SEARCH_ID_COL = {
+        "semantic": "semantic_id",
+        "procedural": "procedural_id",
+        "tag": "tag_id",
+        "subgoal": "subgoal_id",
+        "episodic": "episodic_id",
+    }
+
+    def search_by_text(self, graph_id: str, node_type: str, query: str, limit: int = 50, only_active: bool = False) -> Dict:
+        """Substring search on node text fields via SQL LIKE.
+
+        Inspector UI only — not for agent use.
+        """
+        self._ensure_graph_tables(graph_id)
+        cur = self._conn.cursor()
+        tbl = f'"{graph_id}_{self._TEXT_SEARCH_TABLE[node_type]}"'
+        id_col = self._TEXT_SEARCH_ID_COL[node_type]
+
+        if node_type == "episodic":
+            conditions = ["(observation LIKE ? OR action LIKE ?)"]
+            params: list[Any] = [f"%{query}%", f"%{query}%"]
+        else:
+            text_col = self._TEXT_SEARCH_COL[node_type]
+            conditions = [f"{text_col} LIKE ?"]
+            params = [f"%{query}%"]
+
+        if only_active and node_type == "semantic":
+            conditions.append("is_active = 1")
+
+        cur.execute(
+            f"SELECT * FROM {tbl} WHERE {' AND '.join(conditions)} ORDER BY time DESC LIMIT ?",
+            params + [limit],
+        )
+        rows = cur.fetchall()
+        docs, metas, ids = [], [], []
+        for r in rows:
+            d = dict(r)
+            raw_id = d[id_col]
+            ids.append(raw_id)
+            if node_type == "episodic":
+                raw_text = "\n".join(s for s in (d.get("observation", ""), d.get("action", "")) if s)
+            else:
+                raw_text = d.pop(text_col, "")
+            docs.append(raw_text)
+            if node_type == "semantic":
+                d["tags"] = _json_load(d.get("tags"), [])
+                d["provenance"] = _json_load(d.get("provenance"), {})
+                d["tag_ids"] = _json_load(d.get("tag_ids"), [])
+                d["episodic_ids"] = _json_load(d.get("episodic_ids"), [])
+                d["bro_semantic_ids"] = _json_load(d.get("bro_semantic_ids"), [])
+                d["son_semantic_ids"] = _json_load(d.get("son_semantic_ids"), [])
+            elif node_type == "procedural":
+                d["provenance"] = _json_load(d.get("provenance"), {})
+                d["episodic_ids"] = _json_load(d.get("episodic_ids"), [])
+            elif node_type == "tag":
+                d["semantic_ids"] = _json_load(d.get("semantic_ids"), [])
+            elif node_type == "subgoal":
+                d["procedural_ids"] = _json_load(d.get("procedural_ids"), [])
+            metas.append(d)
+        return {"documents": docs, "metadatas": metas, "ids": ids}
+
+    def browse_nodes(
+        self,
+        graph_id: str,
+        node_type: str,
+        limit: int = 50,
+        offset: int = 0,
+        source_in: Optional[List[str]] = None,
+        min_confidence: Optional[float] = None,
+        provenance_filters: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict:
+        """Fetch semantic/procedural nodes via storage-level metadata filters."""
+        self._ensure_graph_tables(graph_id)
+        if node_type not in ("semantic", "procedural"):
+            raise ValueError("browse_nodes only supports semantic and procedural")
+
+        tbl = f'"{graph_id}_{node_type}_meta"'
+        text_col = "text"
+        id_col = "semantic_id" if node_type == "semantic" else "procedural_id"
+
+        conditions: List[str] = []
+        params: List[Any] = []
+        if source_in:
+            placeholders = ",".join("?" * len(source_in))
+            conditions.append(f"source IN ({placeholders})")
+            params.extend(source_in)
+        if min_confidence is not None:
+            conditions.append("confidence >= ?")
+            params.append(float(min_confidence))
+        if provenance_filters:
+            for key, values in provenance_filters.items():
+                if not values:
+                    continue
+                placeholders = ",".join("?" * len(values))
+                conditions.append(f'provenance_{key} IN ({placeholders})')
+                params.extend(values)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cur = self._conn.cursor()
+        cur.execute(
+            f"SELECT * FROM {tbl} {where} ORDER BY time DESC, {id_col} DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        docs, metas, ids = [], [], []
+        for row in rows:
+            d = dict(row)
+            ids.append(d[id_col])
+            docs.append(d.pop(text_col, ""))
+            metas.append(d)
+
+        count_query = f"SELECT COUNT(*) FROM {tbl} {where}"
+        cur.execute(count_query, params)
+        total = cur.fetchone()[0]
+        return {"documents": docs, "metadatas": metas, "ids": ids, "count": total}
 
     # ------------------------------------------------------------------ #
     # Recall audit
@@ -785,7 +1065,10 @@ class SqliteVecStorage:
                 ),
             )
             self._conn.commit()
-            return cur.lastrowid or 0
+            if cur.lastrowid is None:
+                logger.warning("add_recall: INSERT did not produce a rowid")
+                return 0
+            return cur.lastrowid
 
     def list_recalls(self, graph_id: str, session_id: Optional[str] = None, limit: int = 50) -> List[Dict]:
         self._ensure_graph_tables(graph_id)
@@ -813,6 +1096,10 @@ class SqliteVecStorage:
         cur.execute(
             f'SELECT DISTINCT session_id FROM "{graph_id}_episodic" WHERE session_id IS NOT NULL '
             "UNION "
+            f'SELECT DISTINCT session_id FROM "{graph_id}_semantic_meta" WHERE session_id IS NOT NULL '
+            "UNION "
+            f'SELECT DISTINCT session_id FROM "{graph_id}_procedural_meta" WHERE session_id IS NOT NULL '
+            "UNION "
             f'SELECT DISTINCT session_id FROM "{graph_id}_recall_audit" WHERE session_id IS NOT NULL'
         )
         return [row[0] for row in cur.fetchall() if row[0]]
@@ -822,3 +1109,47 @@ class SqliteVecStorage:
         cur = self._conn.cursor()
         cur.execute(f'SELECT DISTINCT session_id FROM "{graph_id}_recall_audit" WHERE session_id IS NOT NULL')
         return [row[0] for row in cur.fetchall() if row[0]]
+
+    # ------------------------------------------------------------------ #
+    # Session-scoped queries (Inspector UI)
+    # ------------------------------------------------------------------ #
+
+    def get_nodes_by_session(self, graph_id: str, session_id: str) -> Dict[str, List[Dict]]:
+        """Fetch episodic, semantic, and procedural nodes for one session.
+
+        Avoids loading the entire graph — Inspector UI only.
+        """
+        self._ensure_graph_tables(graph_id)
+        cur = self._conn.cursor()
+        result: Dict[str, List[Dict]] = {"episodic": [], "semantic": [], "procedural": []}
+
+        cur.execute(
+            f'SELECT * FROM "{graph_id}_episodic" WHERE session_id=? ORDER BY time',
+            (session_id,),
+        )
+        result["episodic"] = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(
+            f'SELECT * FROM "{graph_id}_semantic_meta" WHERE session_id=? ORDER BY time',
+            (session_id,),
+        )
+        for r in cur.fetchall():
+            d = dict(r)
+            d["tags"] = json.loads(d.get("tags", "[]"))
+            d["provenance"] = json.loads(d.get("provenance", "{}"))
+            d["tag_ids"] = json.loads(d.get("tag_ids", "[]"))
+            d["episodic_ids"] = json.loads(d.get("episodic_ids", "[]"))
+            d["bro_semantic_ids"] = json.loads(d.get("bro_semantic_ids", "[]"))
+            result["semantic"].append(d)
+
+        cur.execute(
+            f'SELECT * FROM "{graph_id}_procedural_meta" WHERE session_id=? ORDER BY time',
+            (session_id,),
+        )
+        for r in cur.fetchall():
+            d = dict(r)
+            d["provenance"] = json.loads(d.get("provenance", "{}"))
+            d["episodic_ids"] = json.loads(d.get("episodic_ids", "[]"))
+            result["procedural"].append(d)
+
+        return result

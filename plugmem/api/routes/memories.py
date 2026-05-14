@@ -28,10 +28,15 @@ async def insert_memories(graph_id: str, body: MemoryInsertRequest) -> MemoryIns
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
 
-    if body.mode == "trajectory":
-        return _insert_trajectory(graph, body)
-    else:
-        return _insert_structured(graph, body)
+    try:
+        if body.mode == "trajectory":
+            return _insert_trajectory(graph, body)
+        else:
+            return _insert_structured(graph, body)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Insert failed: {exc}")
 
 
 @router.post("/{graph_id}/memories/batch", response_model=MemoryInsertResponse)
@@ -53,13 +58,17 @@ async def insert_memories_batch(graph_id: str, body: MemoryBatchInsertRequest) -
             detail=f"batch insert supports structured mode only; invalid items at indexes {invalid}",
         )
 
-    embedder = get_embedder()
-    mem = Memory.from_structured(embedder=embedder, time=graph.semantic_time)
-    for item in body.items:
-        _append_structured_payload(mem, graph, item, embedder)
+    try:
+        embedder = get_embedder()
+        mem = Memory.from_structured(embedder=embedder, time=graph.semantic_time)
+        for item in body.items:
+            _append_structured_payload(mem, graph, item, embedder)
 
-    graph.insert(mem)
-    return MemoryInsertResponse(status="ok", stats=graph.storage.get_graph_stats(graph.graph_id))
+        graph.insert(mem)
+        stats = graph.storage.get_graph_stats(graph.graph_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Batch insert failed: {exc}")
+    return MemoryInsertResponse(status="ok", stats=stats)
 
 
 def _insert_trajectory(graph, body: MemoryInsertRequest) -> MemoryInsertResponse:

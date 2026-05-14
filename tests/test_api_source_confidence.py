@@ -165,6 +165,73 @@ def test_reason_accepts_filter_params(client):
     assert resp.status_code == 200
 
 
+def test_retrieve_with_explicit_semantic_mode_skips_planner_llm(client, monkeypatch):
+    _make_graph(client, "reason_no_plan")
+    client.post("/api/v1/graphs/reason_no_plan/memories", json={
+        "mode": "structured",
+        "semantic": [
+            {
+                "semantic_memory": "use uv",
+                "tags": ["python"],
+                "source": "correction",
+                "confidence": 0.9,
+            },
+        ],
+    })
+
+    import plugmem.core.memory_graph as mg
+
+    def fail_get_plan(*args, **kwargs):
+        raise AssertionError("get_plan should not run for explicit semantic recall")
+
+    monkeypatch.setattr(mg, "get_plan", fail_get_plan)
+
+    resp = client.post("/api/v1/graphs/reason_no_plan/retrieve", json={
+        "observation": "how to install deps",
+        "mode": "semantic_memory",
+    })
+    assert resp.status_code == 200
+
+
+def test_retrieve_with_auto_semantic_mode_skips_planner_llm(client, monkeypatch):
+    _make_graph(client, "reason_auto_sem")
+    client.post("/api/v1/graphs/reason_auto_sem/memories", json={
+        "mode": "structured",
+        "semantic": [
+            {
+                "semantic_memory": "use uv",
+                "tags": ["python"],
+                "source": "correction",
+                "confidence": 0.9,
+            },
+        ],
+    })
+
+    import plugmem.core.memory_graph as mg
+
+    def fake_get_mode(*args, **kwargs):
+        return "semantic_memory"
+
+    def fail_get_plan(*args, **kwargs):
+        raise AssertionError("get_plan should not run when auto mode resolves to semantic")
+
+    monkeypatch.setattr(mg, "get_mode", fake_get_mode)
+    monkeypatch.setattr(mg, "get_plan", fail_get_plan)
+
+    resp = client.post("/api/v1/graphs/reason_auto_sem/retrieve", json={
+        "observation": "how to install deps",
+    })
+    assert resp.status_code == 200
+
+
+def test_get_mode_heuristics_cover_common_cases():
+    from plugmem.inference.retrieving import _heuristic_mode
+
+    assert _heuristic_mode("Who owns this repo?", "") == "semantic_memory"
+    assert _heuristic_mode("how to install deps", "") == "procedural_memory"
+    assert _heuristic_mode("what did we discuss in the previous session", "") == "episodic_memory"
+
+
 class _FakeNode:
     def __init__(self, source=None, confidence=0.5):
         self.source = source

@@ -39,8 +39,15 @@ def _serialize_list(v: Any) -> str:
     return json.dumps(v)
 
 
-def _deserialize_list(s: str) -> list:
-    """Deserialize a JSON string back to a Python list."""
+def _deserialize_list(s: Any) -> list:
+    """Deserialize a JSON string back to a Python list.
+
+    Accepts both raw JSON strings (ChromaStorage returns these) and
+    already-deserialized Python lists (SqliteVecStorage returns these),
+    so callers work with either backend.
+    """
+    if isinstance(s, list):
+        return s
     if not s:
         return []
     return json.loads(s)
@@ -52,6 +59,14 @@ def _serialize_metadata(updates: Dict[str, Any]) -> Dict[str, Any]:
         k: (_serialize_list(v) if isinstance(v, list) else v)
         for k, v in updates.items()
     }
+
+
+def _combine_where_clauses(clauses: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
 
 
 class ChromaStorage:
@@ -754,6 +769,63 @@ class ChromaStorage:
         return col.get(include=["documents", "metadatas", "embeddings"])
 
     # ------------------------------------------------------------------ #
+    # Text search (Inspector UI)
+    # ------------------------------------------------------------------ #
+
+    def search_by_text(self, graph_id: str, node_type: str, query: str, limit: int = 50, only_active: bool = False) -> Dict:
+        """Substring search on node text fields via ChromaDB ``$contains``.
+
+        Inspector UI only — not for agent use.
+        """
+        col = self._col(graph_id, node_type)
+        kwargs: Dict[str, Any] = {
+            "limit": limit,
+            "include": ["documents", "metadatas"],
+        }
+        if query:
+            kwargs["where_document"] = {"$contains": query}
+        if only_active and node_type == "semantic":
+            kwargs["where"] = {"is_active": True}
+        return col.get(**kwargs)
+
+    def browse_nodes(
+        self,
+        graph_id: str,
+        node_type: str,
+        limit: int = 50,
+        offset: int = 0,
+        source_in: Optional[List[str]] = None,
+        min_confidence: Optional[float] = None,
+        provenance_filters: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict:
+        """Fetch semantic/procedural nodes via storage-level metadata filters."""
+        col = self._col(graph_id, node_type)
+        where_clauses: List[Dict[str, Any]] = []
+        if source_in:
+            where_clauses.append({"source": {"$in": list(source_in)}})
+        if min_confidence is not None:
+            where_clauses.append({"confidence": {"$gte": float(min_confidence)}})
+        if provenance_filters:
+            for key, values in provenance_filters.items():
+                if values:
+                    where_clauses.append({f"provenance_{key}": {"$in": list(values)}})
+
+        where = _combine_where_clauses(where_clauses)
+        kwargs: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "include": ["documents", "metadatas"],
+        }
+        if where is not None:
+            kwargs["where"] = where
+        result = col.get(**kwargs)
+        if where is None:
+            result["count"] = col.count()
+        else:
+            result["count"] = len((col.get(where=where) or {}).get("ids", []))
+        return result
+
+    # ------------------------------------------------------------------ #
     # Recall audit log
     # ------------------------------------------------------------------ #
     #
@@ -885,3 +957,42 @@ class ChromaStorage:
             if sid:
                 seen.add(sid)
         return sorted(seen)
+
+    # ------------------------------------------------------------------ #
+    # Session-scoped queries (Inspector UI)
+    # ------------------------------------------------------------------ #
+
+    def get_nodes_by_session(self, graph_id: str, session_id: str) -> Dict[str, List[Dict]]:
+        """Fetch episodic, semantic, and procedural nodes for one session.
+
+        Avoids loading the entire graph — Inspector UI only.
+        Metadata is returned in raw Chroma format (callers deserialize as needed).
+        """
+        result: Dict[str, List[Dict]] = {"episodic": [], "semantic": [], "procedural": []}
+
+        col_e = self._col(graph_id, "episodic")
+        data_e = col_e.get(where={"session_id": session_id}, include=["metadatas"])
+        result["episodic"] = list(data_e.get("metadatas", []) or [])
+
+        col_s = self._col(graph_id, "semantic")
+        data_s = col_s.get(where={"session_id": session_id}, include=["documents", "metadatas"])
+        docs_s = list(data_s.get("documents", []) or [])
+        metas_s = list(data_s.get("metadatas", []) or [])
+        for i, d in enumerate(metas_s):
+            d["text"] = docs_s[i] if i < len(docs_s) else ""
+            d["tags"] = _deserialize_list(d.get("tags", "[]"))
+            d["tag_ids"] = _deserialize_list(d.get("tag_ids", "[]"))
+            d["episodic_ids"] = _deserialize_list(d.get("episodic_ids", "[]"))
+            d["bro_semantic_ids"] = _deserialize_list(d.get("bro_semantic_ids", "[]"))
+        result["semantic"] = metas_s
+
+        col_p = self._col(graph_id, "procedural")
+        data_p = col_p.get(where={"session_id": session_id}, include=["documents", "metadatas"])
+        docs_p = list(data_p.get("documents", []) or [])
+        metas_p = list(data_p.get("metadatas", []) or [])
+        for i, d in enumerate(metas_p):
+            d["text"] = docs_p[i] if i < len(docs_p) else ""
+            d["episodic_ids"] = _deserialize_list(d.get("episodic_ids", "[]"))
+        result["procedural"] = metas_p
+
+        return result

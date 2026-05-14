@@ -55,6 +55,7 @@ Output JSON only, no prose. Schema:
 {
   "memories": [
     {
+      "candidate_index": 0,
       "type": "semantic",
       "semantic_memory": "short factual statement",
       "tags": ["tag1", "tag2"],
@@ -67,6 +68,7 @@ Output JSON only, no prose. Schema:
       }
     },
     {
+      "candidate_index": 1,
       "type": "procedural",
       "subgoal": "what was being attempted",
       "procedural_memory": "the steps that worked",
@@ -187,6 +189,9 @@ _VALID_SOURCES = {"failure_delta", "correction", "merged", "repeated_lookup", "e
 
 def _is_valid_memory(m: Any) -> bool:
     if not isinstance(m, dict):
+        return False
+    candidate_index = m.get("candidate_index")
+    if candidate_index is not None and not isinstance(candidate_index, int):
         return False
     mtype = m.get("type")
     source = m.get("source")

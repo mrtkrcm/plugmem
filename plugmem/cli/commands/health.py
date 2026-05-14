@@ -38,12 +38,15 @@ def health_cmd(
         raise typer.Exit(code=2)
 
     backend = data.get("storage_backend", "chroma")
-    flags = ["llm_available", "embedding_available", "chroma_available"]
+    # Prefer storage_available; fall back to chroma_available for older daemons.
+    storage_ok = data.get("storage_available", data.get("chroma_available", False))
+    data["storage_available"] = storage_ok
+    flags = ["llm_available", "embedding_available", "storage_available"]
 
     overall_ok = True
     for flag in flags:
         ok = data.get(flag, False)
-        label = flag if flag != "chroma_available" else f"storage_available ({backend})"
+        label = flag if flag != "storage_available" else f"storage_available ({backend})"
         mark = "[green]✓[/green]" if ok else "[red]✗[/red]"
         console.print("  {} {}".format(mark, label))
         if not ok:

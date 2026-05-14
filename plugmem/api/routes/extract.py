@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from plugmem.api.auth import require_api_key
 from plugmem.api.dependencies import get_llm
@@ -27,7 +27,10 @@ async def extract(body: ExtractRequest) -> ExtractResponse:
 
     candidates = [{"kind": c.kind, "window": c.window} for c in body.candidates]
     llm = get_llm()
-    memories_raw, rejections_raw = extract_coding_memories(llm, candidates)
+    try:
+        memories_raw, rejections_raw = extract_coding_memories(llm, candidates)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
 
     memories = []
     for m in memories_raw:

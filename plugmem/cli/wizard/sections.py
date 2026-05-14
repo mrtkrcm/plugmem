@@ -130,6 +130,7 @@ def run_service_section(cfg: PlugmemConfig) -> bool:
     cfg.service.port = int(port_str)
 
     # Storage backend selection
+    info("sqlite_vec is experimental — chroma is recommended for production.")
     backend_choice = prompt_choice(
         "storage backend",
         choices=["chroma", "sqlite_vec"],

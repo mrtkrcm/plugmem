@@ -42,6 +42,12 @@ def _get_graph(graph_id: str):
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
 
 
+def _graph_exists_or_404(graph_id: str) -> None:
+    """Check graph existence without loading it into a full MemoryGraph."""
+    if not _manager().storage.graph_exists(graph_id):
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+
+
 def _check_type(node_type: str) -> None:
     if node_type not in NODE_TYPES:
         raise HTTPException(
@@ -136,6 +142,113 @@ SERIALIZERS = {
 }
 
 
+# ------------------------------------------------------------------ #
+# Dict-based serializers for storage-level search results
+# (no MemoryGraph load needed — uses stored metadata fields)
+# ------------------------------------------------------------------ #
+
+
+def _search_serialize_semantic(d: Dict) -> Dict[str, Any]:
+    return {
+        "id": d["semantic_id"],
+        "semantic_id": d["semantic_id"],
+        "text": d.get("text", ""),
+        "tags": d.get("tags", []),
+        "is_active": d.get("is_active", 1),
+        "credibility": d.get("credibility", 10),
+        "session_id": d.get("session_id"),
+        "date": d.get("date", ""),
+        "time": d.get("time", 0),
+        "source": d.get("source"),
+        "confidence": d.get("confidence", 0.5),
+        "provenance": d.get("provenance", {}),
+        "n_tags": len(d.get("tag_ids", [])),
+        "n_episodics": len(d.get("episodic_ids", [])),
+        "n_bro": len(d.get("bro_semantic_ids", [])),
+    }
+
+
+def _search_serialize_procedural(d: Dict) -> Dict[str, Any]:
+    return {
+        "id": d["procedural_id"],
+        "procedural_id": d["procedural_id"],
+        "text": d.get("text", ""),
+        "subgoals": [],
+        "return": d.get("return_value", 0.0),
+        "time": d.get("time", 0),
+        "session_id": d.get("session_id"),
+        "source": d.get("source"),
+        "confidence": d.get("confidence", 0.5),
+        "provenance": d.get("provenance", {}),
+        "n_episodics": len(d.get("episodic_ids", [])),
+    }
+
+
+def _search_serialize_tag(d: Dict) -> Dict[str, Any]:
+    return {
+        "id": d["tag_id"],
+        "tag_id": d["tag_id"],
+        "tag": d.get("tag", ""),
+        "importance": d.get("importance", 1),
+        "time": d.get("time", 0),
+        "n_semantics": len(d.get("semantic_ids", [])),
+    }
+
+
+def _search_serialize_subgoal(d: Dict) -> Dict[str, Any]:
+    return {
+        "id": d["subgoal_id"],
+        "subgoal_id": d["subgoal_id"],
+        "subgoal": d.get("subgoal", ""),
+        "time": d.get("time", 0),
+        "n_procedurals": len(d.get("procedural_ids", [])),
+        "activated": True,
+    }
+
+
+def _search_serialize_episodic(d: Dict) -> Dict[str, Any]:
+    return {
+        "id": d["episodic_id"],
+        "episodic_id": d["episodic_id"],
+        "observation": d.get("observation", ""),
+        "action": d.get("action", ""),
+        "subgoal": d.get("subgoal", ""),
+        "state": d.get("state", ""),
+        "reward": d.get("reward", ""),
+        "session_id": d.get("session_id"),
+        "time": d.get("time", ""),
+    }
+
+
+_SEARCH_SERIALIZERS = {
+    "semantic": _search_serialize_semantic,
+    "procedural": _search_serialize_procedural,
+    "tag": _search_serialize_tag,
+    "subgoal": _search_serialize_subgoal,
+    "episodic": _search_serialize_episodic,
+}
+
+
+def _merge_search_documents(node_type: str, result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Restore text fields expected by the inspector serializers."""
+    metas = list(result.get("metadatas") or [])
+    docs = list(result.get("documents") or [])
+    text_key = {
+        "semantic": "text",
+        "procedural": "text",
+        "tag": "tag",
+        "subgoal": "subgoal",
+    }.get(node_type)
+
+    if text_key is None:
+        return metas
+
+    for meta, doc in zip(metas, docs):
+        if not meta.get(text_key):
+            meta[text_key] = doc or ""
+    return metas
+
+
 def _node_text(node_type: str, node) -> str:
     """Return the searchable text field for a node."""
     if node_type == "semantic":
@@ -200,30 +313,42 @@ async def search_nodes(
     only_active: bool = False,
 ) -> SearchResponse:
     _check_type(node_type)
-    graph = _get_graph(graph_id)
+    needle = q.strip()
 
-    nodes = _list_for_type(graph, node_type)
-    serializer = SERIALIZERS[node_type]
-    needle = q.casefold().strip()
-
-    matches: List[Dict[str, Any]] = []
-    for node in nodes:
-        if only_active and node_type == "semantic" and not node.is_active:
-            continue
-        if needle and needle not in _node_text(node_type, node).casefold():
-            continue
-        matches.append(serializer(node))
-
-    # sort newest first
-    matches.sort(key=lambda d: d.get("time") if isinstance(d.get("time"), (int, float)) else 0, reverse=True)
-    truncated = matches[: max(0, limit)]
+    if needle:
+        # Fast path: storage-level text search, no graph load.
+        _graph_exists_or_404(graph_id)
+        try:
+            result = _manager().storage.search_by_text(graph_id, node_type, needle, limit, only_active)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Search failed: {exc}")
+        serializer = _SEARCH_SERIALIZERS[node_type]
+        rows = _merge_search_documents(node_type, result)
+        nodes = [serializer(m) for m in rows]
+        count = len(nodes)
+    else:
+        # Empty query: load graph and list all (cached after first load).
+        graph = _get_graph(graph_id)
+        nodes_raw = _list_for_type(graph, node_type)
+        serializer = SERIALIZERS[node_type]
+        matches: List[Dict[str, Any]] = []
+        for node in nodes_raw:
+            if only_active and node_type == "semantic" and not node.is_active:
+                continue
+            matches.append(serializer(node))
+        matches.sort(
+            key=lambda d: d.get("time") if isinstance(d.get("time"), (int, float)) else 0,
+            reverse=True,
+        )
+        nodes = matches[: max(0, limit)]
+        count = len(matches)
 
     return SearchResponse(
         graph_id=graph_id,
         node_type=node_type,
         query=q,
-        count=len(matches),
-        nodes=truncated,
+        count=count,
+        nodes=nodes,
     )
 
 
@@ -589,7 +714,10 @@ async def update_semantic(
     if not updates:
         raise HTTPException(status_code=400, detail="no mutable fields supplied")
 
-    graph.storage.update_semantic(graph_id, semantic_id, metadata_updates=updates)
+    try:
+        graph.storage.update_semantic(graph_id, semantic_id, metadata_updates=updates)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Update failed: {exc}")
 
     return NodeDetailResponse(
         graph_id=graph_id,
@@ -613,7 +741,10 @@ async def list_recalls(
     limit: int = 100,
 ) -> RecallListResponse:
     graph = _get_graph(graph_id)
-    rows = graph.storage.list_recalls(graph_id, session_id=session_id, limit=limit)
+    try:
+        rows = graph.storage.list_recalls(graph_id, session_id=session_id, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list recalls: {exc}")
     return RecallListResponse(
         graph_id=graph_id,
         session_id=session_id,
@@ -624,9 +755,12 @@ async def list_recalls(
 
 @router.get("/{graph_id}/sessions", response_model=SessionListResponse)
 async def list_sessions(graph_id: str) -> SessionListResponse:
-    graph = _get_graph(graph_id)  # 404 if missing
-    sessions = set(graph.list_session_ids())
-    sessions.update(_manager().storage.list_recall_sessions(graph_id))
+    """List distinct session IDs from storage directly (no graph load)."""
+    _graph_exists_or_404(graph_id)
+    try:
+        sessions = set(_manager().storage.list_sessions(graph_id))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {exc}")
     return SessionListResponse(graph_id=graph_id, sessions=sorted(sessions))
 
 
@@ -651,47 +785,54 @@ async def get_session_timeline(
 
     Sorted by time ascending. Inserts come before recalls at the same
     time (the recall reads what the insert just produced).
-    """
-    graph = _get_graph(graph_id)
-    events: List[Dict[str, Any]] = []
-    session_nodes = graph.get_session_nodes(session_id)
 
-    for n in session_nodes["episodic"]:
-        text = "\n".join(s for s in (n.observation, n.action) if s)
+    Uses storage-level session queries to avoid loading the full graph.
+    """
+    _graph_exists_or_404(graph_id)
+    storage = _manager().storage
+    events: List[Dict[str, Any]] = []
+    try:
+        session_nodes = storage.get_nodes_by_session(graph_id, session_id)
+        recalls = storage.list_recalls(graph_id, session_id=session_id, limit=10_000)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load session: {exc}")
+
+    for d in session_nodes["episodic"]:
+        text = "\n".join(s for s in (d.get("observation", ""), d.get("action", "")) if s)
         events.append({
             "kind": "insert",
             "node_type": "episodic",
-            "node_id": n.episodic_id,
-            "time": _coerce_int_time(n.time),
-            "label": _short_event_text(n.observation or n.action or "(empty)"),
+            "node_id": d["episodic_id"],
+            "time": _coerce_int_time(d.get("time", "")),
+            "label": _short_event_text(d.get("observation", "") or d.get("action", "") or "(empty)"),
             "text": text,
-            "subgoal": n.subgoal or None,
+            "subgoal": d.get("subgoal") or None,
         })
 
-    for n in session_nodes["semantic"]:
+    for d in session_nodes["semantic"]:
         events.append({
             "kind": "insert",
             "node_type": "semantic",
-            "node_id": n.semantic_id,
-            "time": _coerce_int_time(n.time),
-            "label": _short_event_text(n.get_semantic_memory()),
-            "text": n.get_semantic_memory(),
-            "is_active": n.is_active,
-            "credibility": n.credibility,
+            "node_id": d["semantic_id"],
+            "time": _coerce_int_time(d.get("time", 0)),
+            "label": _short_event_text(d.get("text", "")),
+            "text": d.get("text", ""),
+            "is_active": d.get("is_active", 1),
+            "credibility": d.get("credibility", 10),
         })
 
-    for n in session_nodes["procedural"]:
+    for d in session_nodes["procedural"]:
         events.append({
             "kind": "insert",
             "node_type": "procedural",
-            "node_id": n.procedural_id,
-            "time": _coerce_int_time(n.time),
-            "label": _short_event_text(n.get_procedural_memory()),
-            "text": n.get_procedural_memory(),
-            "return_value": n.return_value,
+            "node_id": d["procedural_id"],
+            "time": _coerce_int_time(d.get("time", 0)),
+            "label": _short_event_text(d.get("text", "")),
+            "text": d.get("text", ""),
+            "return_value": d.get("return_value", 0.0),
         })
 
-    for r in graph.storage.list_recalls(graph_id, session_id=session_id, limit=10_000):
+    for r in recalls:
         events.append({
             "kind": "recall",
             "endpoint": r.get("endpoint"),

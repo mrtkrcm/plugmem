@@ -80,20 +80,23 @@ async def retrieve(graph_id: str, body: RetrieveRequest) -> RetrieveResponse:
     graph = _get_graph(graph_id)
 
     audit: Dict[str, Any] = {}
-    with with_phase("retrieve"):
-        messages, variables, mode = graph.retrieve_memory(
-            goal=body.goal,
-            subgoal=body.subgoal,
-            state=body.state,
-            observation=body.observation,
-            time=body.time,
-            task_type=body.task_type,
-            mode=body.mode,
-            min_confidence=body.min_confidence,
-            source_in=body.source_in,
-            provenance_filters=body.provenance_filters,
-            _audit=audit,
-        )
+    try:
+        with with_phase("retrieve"):
+            messages, variables, mode = graph.retrieve_memory(
+                goal=body.goal,
+                subgoal=body.subgoal,
+                state=body.state,
+                observation=body.observation,
+                time=body.time,
+                task_type=body.task_type,
+                mode=body.mode,
+                min_confidence=body.min_confidence,
+                source_in=body.source_in,
+                provenance_filters=body.provenance_filters,
+                _audit=audit,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Retrieve failed: {exc}")
     _write_audit(graph, endpoint="retrieve", body=body, audit=audit, mode=mode, n_messages=len(messages))
 
     return RetrieveResponse(
@@ -108,23 +111,26 @@ async def reason(graph_id: str, body: ReasonRequest) -> ReasonResponse:
     graph = _get_graph(graph_id)
 
     audit: Dict[str, Any] = {}
-    with with_phase("retrieve"):
-        messages, variables, mode = graph.retrieve_memory(
-            goal=body.goal,
-            subgoal=body.subgoal,
-            state=body.state,
-            observation=body.observation,
-            time=body.time,
-            task_type=body.task_type,
-            mode=body.mode,
-            min_confidence=body.min_confidence,
-            source_in=body.source_in,
-            provenance_filters=body.provenance_filters,
-            _audit=audit,
-        )
+    try:
+        with with_phase("retrieve"):
+            messages, variables, mode = graph.retrieve_memory(
+                goal=body.goal,
+                subgoal=body.subgoal,
+                state=body.state,
+                observation=body.observation,
+                time=body.time,
+                task_type=body.task_type,
+                mode=body.mode,
+                min_confidence=body.min_confidence,
+                source_in=body.source_in,
+                provenance_filters=body.provenance_filters,
+                _audit=audit,
+            )
 
-    with with_phase("reason"):
-        reasoning = graph.llm.complete(messages=messages)
+        with with_phase("reason"):
+            reasoning = graph.llm.complete(messages=messages)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Reason failed: {exc}")
 
     _write_audit(graph, endpoint="reason", body=body, audit=audit, mode=mode, n_messages=len(messages))
 
@@ -139,15 +145,18 @@ async def reason(graph_id: str, body: ReasonRequest) -> ReasonResponse:
 async def consolidate(graph_id: str, body: ConsolidateRequest) -> ConsolidateResponse:
     graph = _get_graph(graph_id)
 
-    stats = graph.update_semantic_subgraph(
-        merge_threshold=body.merge_threshold,
-        max_merges_per_node=body.max_merges_per_node,
-        max_candidates_per_tag=body.max_candidates_per_tag,
-        max_total_candidates=body.max_total_candidates,
-        min_credibility_to_keep_active=body.min_credibility_to_keep_active,
-        credibility_decay=body.credibility_decay,
-        only_update_recent_window=body.only_update_recent_window,
-        allow_merge_with_common_episodic_nodes=body.allow_merge_with_common_episodic_nodes,
-    )
+    try:
+        stats = graph.update_semantic_subgraph(
+            merge_threshold=body.merge_threshold,
+            max_merges_per_node=body.max_merges_per_node,
+            max_candidates_per_tag=body.max_candidates_per_tag,
+            max_total_candidates=body.max_total_candidates,
+            min_credibility_to_keep_active=body.min_credibility_to_keep_active,
+            credibility_decay=body.credibility_decay,
+            only_update_recent_window=body.only_update_recent_window,
+            allow_merge_with_common_episodic_nodes=body.allow_merge_with_common_episodic_nodes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Consolidate failed: {exc}")
 
     return ConsolidateResponse(status="ok", stats=stats)

@@ -128,7 +128,10 @@ async def promote(graph_id: str, body: PromoteRequest) -> PromoteResponse:
 
     candidates = [{"kind": c.kind, "window": c.window} for c in body.candidates]
     llm = get_llm()
-    memories_raw, rejections_raw = extract_coding_memories(llm, candidates)
+    try:
+        memories_raw, rejections_raw = extract_coding_memories(llm, candidates)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Promote extraction failed: {exc}")
 
     # Parse raw memories into ExtractedMemory models
     parsed_memories: List[ExtractedMemory] = []
@@ -164,6 +167,7 @@ async def promote(graph_id: str, body: PromoteRequest) -> PromoteResponse:
     # Build rejection list from the raw rejections
     dropped: List[RejectedCandidate] = []
     rejected_indices: set = set()
+    covered_indices: set[int] = set()
     for r in rejections_raw:
         try:
             dropped.append(RejectedCandidate(**r))
@@ -171,15 +175,14 @@ async def promote(graph_id: str, body: PromoteRequest) -> PromoteResponse:
         except Exception:
             pass
 
+    for m in parsed_memories:
+        if m.candidate_index is not None:
+            covered_indices.add(m.candidate_index)
+
     # Silent-drop tracking: any input candidate that was neither rejected nor
-    # produced a memory should be reported.  Since extracted memories do not
-    # carry a candidate index, we approximate: if a candidate's *kind* appears
-    # as the source of at least one extracted memory, consider it covered.
-    # Limitation: two candidates with the same kind where one produces a memory
-    # and the other does not will not catch the silent drop.
-    produced_sources: set = {m.source for m in filtered_memories}
+    # tied to an extracted memory should be reported.
     for i, c in enumerate(body.candidates):
-        if i not in rejected_indices and c.kind not in produced_sources:
+        if i not in rejected_indices and i not in covered_indices:
             dropped.append(RejectedCandidate(
                 index=i, kind=c.kind,
                 reason="llm produced no output for this candidate",

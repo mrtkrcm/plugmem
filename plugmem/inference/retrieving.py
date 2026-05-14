@@ -33,6 +33,34 @@ _REQUIRED_KEYS = {
 }
 
 
+def _heuristic_mode(observation: str, task_type: str) -> Optional[str]:
+    """Cheap mode resolver for obvious cases before invoking the LLM."""
+    obs = (observation or "").casefold().strip()
+    task = (task_type or "").casefold().strip()
+    combined = f"{task}\n{obs}"
+
+    episodic_markers = (
+        "earlier conversation", "previous conversation", "conversation history",
+        "chat history", "earlier session", "previous session", "what did i say",
+        "what did we discuss", "historical conversation",
+    )
+    procedural_markers = (
+        "workflow", "interactive environment", "web navigation", "browser",
+        "debugging", "fix flaky", "fix failing", "run tests", "deploy",
+        "install deps", "how to ", "steps to ", "procedure", "playbook",
+    )
+
+    if any(marker in combined for marker in episodic_markers):
+        return "episodic_memory"
+    if any(marker in combined for marker in procedural_markers):
+        return "procedural_memory"
+    if obs.startswith(("who ", "what ", "when ", "where ", "which ", "why ", "is ", "are ", "do ", "does ", "can ")):
+        return "semantic_memory"
+    if "?" in obs and "how" not in obs:
+        return "semantic_memory"
+    return None
+
+
 def get_plan(
     llm: LLMClient, goal: str, subgoal: str, state: str, observation: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
@@ -126,6 +154,9 @@ def get_mode(
     llm: LLMClient, observation: str, task_type: str,
     *, prompts: Optional[PromptRegistry] = None, graph_id: Optional[str] = None,
 ) -> str:
+    fast = _heuristic_mode(observation, task_type)
+    if fast is not None:
+        return fast
     prompt_obj = resolve("get_mode", GetModePrompt, prompts, graph_id)
     variables = {"observation": observation, "task_type": task_type}
     response = llm.complete(messages=render_messages(prompt_obj, variables))

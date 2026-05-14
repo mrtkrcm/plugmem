@@ -45,10 +45,8 @@ from plugmem.prompts.reasoning import (
     DefaultSemanticPrompt,
 )
 from plugmem.prompts.registry import PromptRegistry
-from plugmem.storage.chroma import ChromaStorage, _deserialize_list
-from plugmem.storage.sqlite_vec import SqliteVecStorage
-
-StorageBackend = ChromaStorage | SqliteVecStorage
+from plugmem.storage import StorageBackend
+from plugmem.storage.chroma import _deserialize_list
 
 logger = logging.getLogger(__name__)
 
@@ -1296,18 +1294,21 @@ class MemoryGraph:
         provenance_filters: Optional[Dict[str, List[str]]] = None,
         _audit: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, str]], Dict[str, Any], str]:
-        next_subgoal, query_tags = get_plan(
-            self.retrieval_llm, goal=goal, subgoal=subgoal, state=state, observation=observation,
-            prompts=self.prompts, graph_id=self.graph_id,
-        )
-        logger.info("query_tags: %s", query_tags)
-
         if mode is None:
             mode = get_mode(
                 self.retrieval_llm, observation=observation, task_type=task_type,
                 prompts=self.prompts, graph_id=self.graph_id,
             )
         logger.info("mode: %s", mode)
+
+        query_tags: List[str] = []
+        next_subgoal = subgoal or observation or ""
+        if mode in ["procedural_memory", "episodic_memory"]:
+            next_subgoal, query_tags = get_plan(
+                self.retrieval_llm, goal=goal, subgoal=subgoal, state=state, observation=observation,
+                prompts=self.prompts, graph_id=self.graph_id,
+            )
+        logger.info("query_tags: %s", query_tags)
 
         prompt_name, fallback_cls = _REASONING_MAP.get(mode, ("reasoning_semantic", DefaultSemanticPrompt))
         if self.prompts is not None:

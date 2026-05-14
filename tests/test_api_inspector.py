@@ -1,6 +1,12 @@
 """Smoke tests for inspector and demo routes."""
 from __future__ import annotations
 
+import os
+
+from fastapi.testclient import TestClient
+
+from tests.conftest import FakeEmbedder, FakeLLM
+
 
 def _make_graph(client, graph_id="test_graph"):
     client.post("/api/v1/graphs", json={"graph_id": graph_id})
@@ -32,10 +38,82 @@ def test_search_nodes_with_data(client):
     assert data["nodes"][0]["semantic_memory"] == "test fact"
 
 
+def test_search_fast_path_includes_document_text_for_sqlite_vec(monkeypatch, tmp_path):
+    monkeypatch.setenv("STORAGE_BACKEND", "sqlite_vec")
+    monkeypatch.setenv("SQLITE_VEC_PATH", str(tmp_path / "inspector.db"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    for key in ("EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    from plugmem.api import dependencies
+    from plugmem.api.app import create_app
+
+    graph_id = "vec_graph"
+    dependencies.reset_singletons()
+    dependencies.get_config.cache_clear()
+    dependencies._llm_client = FakeLLM()
+    dependencies._embedding_client = FakeEmbedder()
+    with TestClient(create_app()) as client:
+        _make_graph(client, graph_id)
+        insert = client.post(f"/api/v1/graphs/{graph_id}/memories", json={
+            "mode": "structured",
+            "semantic": [{"semantic_memory": "match me", "tags": ["search"]}],
+            "procedural": [{"procedural_memory": "run match me task", "subgoal": "task"}],
+        })
+        assert insert.status_code == 200, insert.text
+        dependencies.get_graph_manager().storage.add_tag_batch(graph_id, [
+            {"tag_id": 999, "tag": "match-tag", "embedding": [0.1] * FakeEmbedder.DIM},
+        ])
+        dependencies.get_graph_manager().storage.add_subgoal_batch(graph_id, [
+            {"subgoal_id": 999, "subgoal": "match-subgoal", "time": 0, "procedural_ids": []},
+        ])
+
+        sem = client.get(f"/api/v1/graphs/{graph_id}/search", params={"node_type": "semantic", "q": "match"})
+        assert sem.status_code == 200
+        assert sem.json()["nodes"][0]["text"] == "match me"
+
+        proc = client.get(f"/api/v1/graphs/{graph_id}/search", params={"node_type": "procedural", "q": "match"})
+        assert proc.status_code == 200
+        assert proc.json()["nodes"][0]["text"] == "run match me task"
+
+        tag = client.get(f"/api/v1/graphs/{graph_id}/search", params={"node_type": "tag", "q": "match"})
+        assert tag.status_code == 200
+        assert tag.json()["nodes"][0]["tag"] == "match-tag"
+
+        subgoal = client.get(f"/api/v1/graphs/{graph_id}/search", params={"node_type": "subgoal", "q": "match"})
+        assert subgoal.status_code == 200
+        assert subgoal.json()["nodes"][0]["subgoal"] == "match-subgoal"
+
+        episodic = client.post(f"/api/v1/graphs/{graph_id}/memories", json={
+            "mode": "structured",
+            "session_id": "sess-1",
+            "episodic": [[{
+                "observation": "compiler error",
+                "action": "inspect logs",
+                "subgoal": "debug build",
+                "state": "failing",
+                "reward": "-1",
+                "time": "2026-05-14T10:00:00Z",
+            }]],
+        })
+        assert episodic.status_code == 200, episodic.text
+
+        epi = client.get(f"/api/v1/graphs/{graph_id}/search", params={"node_type": "episodic", "q": "compiler"})
+        assert epi.status_code == 200
+        assert epi.json()["nodes"][0]["observation"] == "compiler error"
+        assert epi.json()["nodes"][0]["action"] == "inspect logs"
+
+    dependencies.reset_singletons()
+    dependencies.get_config.cache_clear()
+    os.environ.pop("STORAGE_BACKEND", None)
+    os.environ.pop("SQLITE_VEC_PATH", None)
+
+
 def test_nodes_provenance_filter_scopes_results(client):
     """/nodes language=python should match python-provenanced semantics only."""
-    _make_graph(client)
-    client.post("/api/v1/graphs/test_graph/memories", json={
+    graph_id = "prov_graph"
+    _make_graph(client, graph_id)
+    client.post(f"/api/v1/graphs/{graph_id}/memories", json={
         "mode": "structured",
         "semantic": [{
             "semantic_memory": "use uv, not pip",
@@ -45,7 +123,7 @@ def test_nodes_provenance_filter_scopes_results(client):
             "provenance": {"language": "python"},
         }],
     })
-    client.post("/api/v1/graphs/test_graph/memories", json={
+    client.post(f"/api/v1/graphs/{graph_id}/memories", json={
         "mode": "structured",
         "semantic": [{
             "semantic_memory": "use swift-format",
@@ -57,29 +135,30 @@ def test_nodes_provenance_filter_scopes_results(client):
     })
 
     py = client.get(
-        "/api/v1/graphs/test_graph/nodes",
+        f"/api/v1/graphs/{graph_id}/nodes",
         params={"node_type": "semantic", "language": "python"},
     ).json()
     assert py["count"] == 1
     assert py["nodes"][0]["semantic_memory"] == "use uv, not pip"
 
     sw = client.get(
-        "/api/v1/graphs/test_graph/nodes",
+        f"/api/v1/graphs/{graph_id}/nodes",
         params={"node_type": "semantic", "language": "swift"},
     ).json()
     assert sw["count"] == 1
     assert sw["nodes"][0]["semantic_memory"] == "use swift-format"
 
     rust = client.get(
-        "/api/v1/graphs/test_graph/nodes",
+        f"/api/v1/graphs/{graph_id}/nodes",
         params={"node_type": "semantic", "language": "rust"},
     ).json()
     assert rust["count"] == 0
 
 
 def test_nodes_source_and_confidence_filter(client):
-    _make_graph(client)
-    client.post("/api/v1/graphs/test_graph/memories", json={
+    graph_id = "source_graph"
+    _make_graph(client, graph_id)
+    client.post(f"/api/v1/graphs/{graph_id}/memories", json={
         "mode": "structured",
         "semantic": [{
             "semantic_memory": "explicit high-conf",
@@ -88,7 +167,7 @@ def test_nodes_source_and_confidence_filter(client):
             "confidence": 0.9,
         }],
     })
-    client.post("/api/v1/graphs/test_graph/memories", json={
+    client.post(f"/api/v1/graphs/{graph_id}/memories", json={
         "mode": "structured",
         "semantic": [{
             "semantic_memory": "inferred low-conf",
@@ -99,14 +178,14 @@ def test_nodes_source_and_confidence_filter(client):
     })
 
     explicit_only = client.get(
-        "/api/v1/graphs/test_graph/nodes",
+        f"/api/v1/graphs/{graph_id}/nodes",
         params=[("node_type", "semantic"), ("source_in", "explicit")],
     ).json()
     assert explicit_only["count"] == 1
     assert explicit_only["nodes"][0]["source"] == "explicit"
 
     high_conf = client.get(
-        "/api/v1/graphs/test_graph/nodes",
+        f"/api/v1/graphs/{graph_id}/nodes",
         params={"node_type": "semantic", "min_confidence": 0.5},
     ).json()
     assert high_conf["count"] == 1

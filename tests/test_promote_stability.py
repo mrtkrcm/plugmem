@@ -28,6 +28,7 @@ class RespondingLLM(LLMClient):
 _DEFAULT_RESPONSE = json.dumps({
     "memories": [
         {
+            "candidate_index": 0,
             "type": "semantic",
             "semantic_memory": "Use uv, not pip for Python dependency management",
             "tags": ["python", "tooling"],
@@ -36,6 +37,7 @@ _DEFAULT_RESPONSE = json.dumps({
             "provenance": {"repo": "org/repo", "language": "python", "tool_name": "uv"},
         },
         {
+            "candidate_index": 1,
             "type": "procedural",
             "subgoal": "install project dependencies",
             "procedural_memory": "Run `uv sync` instead of `pip install -r requirements.txt`",
@@ -224,6 +226,37 @@ def test_promote_with_provenance_roundtrip(client):
     graph_id = "promo_prov"
     stats = client.get(f"/api/v1/graphs/{graph_id}/stats").json()
     assert stats["stats"]["semantic"] == 1
+
+
+def test_promote_reports_uncovered_duplicate_kind_candidate(client):
+    """A produced correction must not mask another correction that emitted nothing."""
+    response = json.dumps({
+        "memories": [
+            {
+                "candidate_index": 0,
+                "type": "semantic",
+                "semantic_memory": "Use uv, not pip",
+                "tags": ["python"],
+                "source": "correction",
+                "confidence": 0.9,
+            },
+        ],
+        "rejections": [],
+    })
+    _set_llm(RespondingLLM(response))
+    client.post("/api/v1/graphs", json={"graph_id": "promo_dup_kind"})
+
+    resp = client.post("/api/v1/graphs/promo_dup_kind/promote", json={
+        "candidates": [
+            {"kind": "correction", "window": "candidate one"},
+            {"kind": "correction", "window": "candidate two"},
+        ],
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["inserted"]) == 1
+    assert len(data["dropped"]) == 1
+    assert data["dropped"][0]["index"] == 1
 
 
 def test_extract_with_rejection_reasons(client):

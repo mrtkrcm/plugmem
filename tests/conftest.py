@@ -98,6 +98,7 @@ def graph_manager(storage, fake_llm, fake_embedder):
 def client(graph_manager, fake_llm, fake_embedder):
     """TestClient wired to fake backends."""
     deps.reset_singletons()
+    deps.get_config.cache_clear()
 
     # Override the singletons
     deps._llm_client = fake_llm
@@ -109,3 +110,4 @@ def client(graph_manager, fake_llm, fake_embedder):
         yield tc
 
     deps.reset_singletons()
+    deps.get_config.cache_clear()

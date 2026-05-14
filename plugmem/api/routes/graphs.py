@@ -27,6 +27,43 @@ def _manager() -> GraphManager:
     return get_graph_manager()
 
 
+def _serialize_storage_node(node_type: str, doc: str, meta: dict) -> dict:
+    if node_type == "semantic":
+        prov = meta.get("provenance")
+        if prov is None:
+            prov = {
+                k.removeprefix("provenance_"): v
+                for k, v in meta.items()
+                if k.startswith("provenance_") and v is not None
+            }
+        return {
+            "semantic_id": meta["semantic_id"],
+            "semantic_memory": doc or "",
+            "tags": meta.get("tags", []),
+            "is_active": meta.get("is_active", 1),
+            "credibility": meta.get("credibility", 10),
+            "time": meta.get("time", 0),
+            "source": meta.get("source"),
+            "confidence": meta.get("confidence"),
+            "provenance": prov or {},
+        }
+    return {
+        "procedural_id": meta["procedural_id"],
+        "procedural_memory": doc or "",
+        "subgoals": [meta.get("subgoal", "")] if meta.get("subgoal") else [],
+        "return": meta.get("return_value", meta.get("return", 0.0)),
+        "session_id": meta.get("session_id"),
+        "time": meta.get("time", 0),
+        "source": meta.get("source"),
+        "confidence": meta.get("confidence"),
+        "provenance": meta.get("provenance") or {
+            k.removeprefix("provenance_"): v
+            for k, v in meta.items()
+            if k.startswith("provenance_") and v is not None
+        },
+    }
+
+
 @router.post("", response_model=GraphResponse, status_code=status.HTTP_201_CREATED)
 async def create_graph(body: GraphCreateRequest) -> GraphResponse:
     gm = _manager()
@@ -41,7 +78,11 @@ async def create_graph(body: GraphCreateRequest) -> GraphResponse:
 @router.get("", response_model=GraphListResponse)
 async def list_graphs() -> GraphListResponse:
     gm = _manager()
-    return GraphListResponse(graphs=gm.list_graphs())
+    try:
+        graphs = gm.list_graphs()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list graphs: {exc}")
+    return GraphListResponse(graphs=graphs)
 
 
 @router.get("/{graph_id}", response_model=GraphResponse)
@@ -92,10 +133,47 @@ async def browse_nodes(
     offset: int = 0,
     language: Optional[str] = None,
     repo: Optional[str] = None,
+    component: Optional[str] = None,
     source_in: Optional[List[str]] = Query(default=None),
     min_confidence: Optional[float] = None,
 ) -> NodeListResponse:
     gm = _manager()
+    if not gm.storage.graph_exists(graph_id):
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+
+    if node_type in ("semantic", "procedural"):
+        provenance_filters: dict[str, list[str]] = {}
+        if language:
+            provenance_filters["language"] = [language]
+        if repo:
+            provenance_filters["repo"] = [repo]
+        if component:
+            provenance_filters["component"] = [component]
+        try:
+            result = gm.storage.browse_nodes(
+                graph_id,
+                node_type=node_type,
+                limit=limit,
+                offset=offset,
+                source_in=source_in,
+                min_confidence=min_confidence,
+                provenance_filters=provenance_filters or None,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Browse failed: {exc}")
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or []
+        nodes = [
+            _serialize_storage_node(node_type, doc, meta)
+            for doc, meta in zip(docs, metas)
+        ]
+        return NodeListResponse(
+            graph_id=graph_id,
+            node_type=node_type,
+            count=int(result.get("count", len(nodes))),
+            nodes=nodes,
+        )
+
     try:
         graph = gm.get_graph(graph_id)
     except KeyError:
@@ -114,29 +192,7 @@ async def browse_nodes(
             detail=f"Invalid node_type '{node_type}'. Must be one of: {list(type_map)}",
         )
 
-    # Metadata filters apply only to experience nodes (semantic / procedural).
-    # tag / subgoal / episodic don't carry provenance / source / confidence.
-    metadata_filtering = (
-        node_type in ("semantic", "procedural")
-        and (language or repo or source_in or min_confidence is not None)
-    )
-
     nodes = type_map[node_type]
-
-    if metadata_filtering:
-        from plugmem.core.memory_graph import _passes_metadata_filter
-
-        provenance_filters: dict[str, list[str]] = {}
-        if language:
-            provenance_filters["language"] = [language]
-        if repo:
-            provenance_filters["repo"] = [repo]
-        nodes = [
-            n for n in nodes
-            if _passes_metadata_filter(
-                n, min_confidence, source_in, provenance_filters or None,
-            )
-        ]
 
     page = nodes[offset : offset + limit]
 

@@ -245,6 +245,11 @@ class ExtractRequest(BaseModel):
 
 class ExtractedMemory(BaseModel):
     type: Literal["semantic", "procedural"]
+    candidate_index: Optional[int] = Field(
+        None,
+        ge=0,
+        description="0-based index of the source candidate that produced this memory.",
+    )
     semantic_memory: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     subgoal: Optional[str] = None
@@ -488,5 +493,6 @@ class HealthResponse(BaseModel):
     version: str
     llm_available: bool
     embedding_available: bool
-    chroma_available: bool
+    chroma_available: bool  # deprecated alias for storage_available; kept for one release
+    storage_available: bool = False
     storage_backend: str = "chroma"

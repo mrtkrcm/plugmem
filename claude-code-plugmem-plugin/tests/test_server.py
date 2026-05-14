@@ -120,6 +120,7 @@ def test_list_tools(server, patch_urlopen):
     assert "plugmem_remember" in tool_names
     assert "plugmem_recall" in tool_names
     assert "plugmem_promote" in tool_names
+    assert "plugmem_browse" in tool_names
 
 
 # ------------------------------------------------------------------ #
@@ -209,17 +210,119 @@ def test_remember_trajectory(server, patch_urlopen):
 # ------------------------------------------------------------------ #
 
 def test_recall(server, patch_urlopen):
-    _set_post_handler(lambda path, body: {
+    calls: list[dict] = []
+
+    def handler(path, body):
+        calls.append({"path": path, "body": body})
+        return {
         "mode": "semantic_memory",
         "reasoning": "Use UV for Python dependency management",
         "reasoning_prompt": [{"role": "user", "content": "prompt"}],
-    })
+        }
+
+    _set_post_handler(handler)
 
     out = StringIO()
     with patch("server.sys.stdout", out):
-        result = server._tool_recall({"observation": "how to install deps"})
+        result = server._tool_recall({
+            "observation": "how to install deps",
+            "language": "python",
+            "repo": "org/repo",
+        })
     assert "semantic_memory" in result
     assert "Use UV" in result
+    reason_calls = [c for c in calls if c["path"].endswith("/reason")]
+    assert reason_calls
+    prov = reason_calls[0]["body"]["provenance_filters"]
+    assert prov["language"] == ["python"]
+    assert prov["repo"] == ["org/repo"]
+
+
+def test_recall_debug_returns_structured_payload(server, patch_urlopen):
+    _set_post_handler(lambda path, body: {
+        "mode": "semantic_memory",
+        "reasoning": "debug reasoning",
+        "reasoning_prompt": [{"role": "user", "content": "prompt"}],
+    })
+    payload = json.loads(server._tool_recall({
+        "observation": "how to install deps",
+        "debug": True,
+    }))
+    assert payload["request"]["observation"] == "how to install deps"
+    assert payload["response"]["reasoning"] == "debug reasoning"
+
+
+def test_recall_supports_full_provenance_filter_set(server, patch_urlopen):
+    calls: list[dict] = []
+
+    def handler(path, body):
+        calls.append({"path": path, "body": body})
+        return {
+            "mode": "semantic_memory",
+            "reasoning": "scoped",
+            "reasoning_prompt": [{"role": "user", "content": "prompt"}],
+        }
+
+    _set_post_handler(handler)
+
+    result = server._tool_recall({
+        "observation": "how to run tests",
+        "branch": "main",
+        "commit": "abc123",
+        "filepath": "src/app.py",
+        "package_manager": "uv",
+        "tool_name": "pytest",
+        "tool_version": "8.0",
+        "os": "macos",
+        "component": "api",
+    })
+    assert "scoped" in result
+    reason_calls = [c for c in calls if c["path"].endswith("/reason")]
+    prov = reason_calls[0]["body"]["provenance_filters"]
+    assert prov["branch"] == ["main"]
+    assert prov["commit"] == ["abc123"]
+    assert prov["filepath"] == ["src/app.py"]
+    assert prov["package_manager"] == ["uv"]
+    assert prov["tool_name"] == ["pytest"]
+    assert prov["tool_version"] == ["8.0"]
+    assert prov["os"] == ["macos"]
+    assert prov["component"] == ["api"]
+
+
+def test_recall_forwards_extended_retrieval_context(server, patch_urlopen):
+    calls: list[dict] = []
+
+    def handler(path, body):
+        calls.append({"path": path, "body": body})
+        return {
+            "mode": "procedural_memory",
+            "reasoning": "use the stored procedure",
+            "reasoning_prompt": [{"role": "user", "content": "prompt"}],
+        }
+
+    _set_post_handler(handler)
+
+    result = server._tool_recall({
+        "observation": "tests are failing",
+        "goal": "restore green CI",
+        "subgoal": "fix flaky pytest",
+        "state": "red build",
+        "task_type": "debugging",
+        "time": "2026-05-14T10:00:00Z",
+        "session_id": "sess-42",
+        "mode": "procedural_memory",
+    })
+    assert "procedural_memory" in result
+    reason_calls = [c for c in calls if c["path"].endswith("/reason")]
+    body = reason_calls[0]["body"]
+    assert body["observation"] == "tests are failing"
+    assert body["goal"] == "restore green CI"
+    assert body["subgoal"] == "fix flaky pytest"
+    assert body["state"] == "red build"
+    assert body["task_type"] == "debugging"
+    assert body["time"] == "2026-05-14T10:00:00Z"
+    assert body["session_id"] == "sess-42"
+    assert body["mode"] == "procedural_memory"
 
 
 # ------------------------------------------------------------------ #
@@ -246,3 +349,10 @@ def test_promote(server, patch_urlopen):
         result = server._tool_promote({"kind": "correction", "window": "use uv"})
     assert "Promoted" in result
     assert "ID 0" in result
+
+
+def test_browse_tool(server, patch_urlopen):
+    _set_post_handler(lambda path, body: {"graph_id": "test-graph", "node_type": "semantic", "count": 1, "nodes": [{"semantic_memory": "Use uv, not pip"}]})
+    result = server._tool_browse({"node_type": "semantic", "limit": 5})
+    assert "1 semantic node(s)" in result
+    assert "Use uv, not pip" in result
