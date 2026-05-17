@@ -213,3 +213,5 @@ __marimo__/
 data/
 
 # (CLAUDE.md is intentionally tracked — see project root)
+# CocoIndex Code (ccc)
+/.cocoindex_code/

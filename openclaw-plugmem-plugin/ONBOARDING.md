@@ -65,11 +65,11 @@ uv run uvicorn plugmem.api.app:app --host 0.0.0.0 --port 8080
 Health check (in a second shell):
 
 ```bash
-curl -s http://localhost:8080/health | jq
+curl -s http://localhost:8080/api/v1/health | jq
 ```
 
 You want `status: "ok"` and all three of `llm_available`,
-`embedding_available`, `chroma_available` set to `true`
+`embedding_available`, and `storage_available` set to `true`
 (`storage_backend` says which backend is in use). If any is `false`, fix
 the corresponding env var before continuing — the plugin will appear to
 work but memory insertion and retrieval will fail.
@@ -257,7 +257,7 @@ design.
 
 | Symptom | Likely cause |
 |---|---|
-| `/health` returns `llm_available: false` | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` not set or endpoint unreachable. |
+| `/api/v1/health` returns `llm_available: false` | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` not set or endpoint unreachable. |
 | `plugmem.remember` returns `404` | Graph doesn't exist. Run the `POST /graphs` call from step 2. |
 | `plugmem.remember` returns `401` | `apiKey` in plugin config doesn't match server's `PLUGMEM_API_KEY`. |
 | Auto-remember never fires | `defaultGraphId` not set, or session had `< minSteps` turns. Check server stderr for `[plugmem] auto-remember` lines. |
@@ -357,9 +357,9 @@ Claude: *calls plugmem_remember with text="Format Python code with ruff format"
 
 ## Further reading
 
-- API reference: every route lives under `plugmem/api/routes/` — one file
-  per resource (`graphs.py`, `memories.py`, `retrieval.py`).
-- Env vars: `ENV_REFERENCE.md` at the repo root.
-- Architecture: the paper
+- API reference: route handlers live under `plugmem/api/routes/`.
+- Main product overview: [README.md](../README.md).
+- Deployment guide: [docs/remote-deployment.md](../docs/remote-deployment.md).
+- Architecture background: the paper
   (https://arxiv.org/abs/2603.03296) and `CLAUDE.md` for the pipeline
   (structure → store → retrieve → reason).
