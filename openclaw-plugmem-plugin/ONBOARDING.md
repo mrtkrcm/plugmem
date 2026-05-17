@@ -16,7 +16,7 @@ about 10 minutes.
 
 ## Prerequisites
 
-- **Python 3.10+** with [`uv`](https://docs.astral.sh/uv/).
+- **Python 3.11+** with [`uv`](https://docs.astral.sh/uv/).
 - **Node.js 18+** and `npm` (for building the plugin).
 - **OpenClaw** host running locally — you'll register the plugin against it.
 - **An OpenAI-compatible LLM endpoint** (OpenAI, vLLM, Ollama with the
